@@ -1,0 +1,2324 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+# Hugo Fernando Maia Milan (C) 2025
+# License CC BY-SA 4.0
+
+# preliminaries
+library(readxl)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(geobr)
+library(tidyr)
+library(mgcv)
+library(raster)
+library(ncdf4)
+library(stringr)
+library(moments)
+library(stars)
+library(gstat)
+library(corrplot)
+library(scales) 
+library(boot)
+library(pwr)
+setwd("~/GDrive/Pesquisa/2025/0002 - Especialização Aline/0011 - Paper 03/Code and data")
+```
+
+
+```{r}
+# loading irradiance data and map
+# data from Brazilian Solar Energy Atlas (BSEA). We have found using PVSOL in Engineering
+# Practice that BSEA data works better to estimating solar energy PV production
+# than other data
+
+# we process and save for local use
+# map_BR <- st_read("maps/BC250/cities_areas/lml_municipio_a.shp")
+# map_RO = map_BR[str_starts(map_BR$geocodigo, "11"),]
+# saveRDS(map_RO, "maps/map_RO_2023.rds")
+map_RO <- readRDS("maps/map_RO_2023.rds")
+borders_RO = st_union(map_RO)
+
+# cities_BR = st_read("maps/BC250/cities_points/lml_cidade_p.shp")
+# cities_BR = st_transform(cities_BR, st_crs(map_RO)) 
+# cities_RO = cities_BR[str_starts(cities_BR$geocodigo, "11"),]
+# saveRDS(cities_RO, "maps/cities_RO_2023.rds")
+cities_RO <- readRDS("maps/cities_RO_2023.rds")
+
+# loading diffuse data
+# Brazil_diffuse_data <- st_read("BSEA/DIFFUSE/diffuse_means.shp")
+# Brazil_diffuse_data <- st_transform(Brazil_diffuse_data, st_crs(map_RO)) # Adjusting CRS if needed
+# RO_diffuse_data <- st_intersection(Brazil_diffuse_data, borders_RO)
+# saveRDS(RO_diffuse_data, "maps/diffuse_RO.rds")
+RO_diffuse_data <- readRDS("maps/diffuse_RO.rds")
+
+# loading direct normal data
+# Brazil_direct_normal_data <- st_read("BSEA/DIRECT_NORMAL/direct_normal_means.shp")
+# Brazil_direct_normal_data <- st_transform(Brazil_direct_normal_data, st_crs(map_RO)) # Adjusting CRS if needed
+# RO_direct_normal_data <- st_intersection(Brazil_direct_normal_data, borders_RO)
+# saveRDS(RO_direct_normal_data, "maps/direct_normal_RO.rds")
+RO_direct_normal_data <- readRDS("maps/direct_normal_RO.rds")
+
+# loading global horizontal data
+# Brazil_global_horizontal_data <- st_read("BSEA/GLOBAL_HORIZONTAL/global_horizontal_means.shp")
+# Brazil_global_horizontal_data <- st_transform(Brazil_global_horizontal_data, st_crs(map_RO)) # Adjusting CRS if needed
+# RO_global_horizontal_data <- st_intersection(Brazil_global_horizontal_data, borders_RO)
+# saveRDS(RO_global_horizontal_data, "maps/global_horizontal_RO.rds")
+RO_global_horizontal_data <- readRDS("maps/global_horizontal_RO.rds")
+
+
+# loading tilted latitude data
+# Brazil_tilted_latitude_data <- st_read("BSEA/TILTED_LATITUDE/tilted_latitude_means.shp")
+# Brazil_tilted_latitude_data <- st_transform(Brazil_tilted_latitude_data, st_crs(map_RO)) # Adjustin CRS if needed
+# RO_tilted_latitude_data <- st_intersection(Brazil_tilted_latitude_data, borders_RO)
+# saveRDS(RO_tilted_latitude_data, "maps/tilted_latitude_RO.rds")
+RO_tilted_latitude_data <- readRDS("maps/tilted_latitude_RO.rds")
+
+plot_map_RO = function(sf_file_to_plot, sf_data_to_plot = "ANNUAL", name_to_save = "",
+                       continuous = FALSE, n.contours = FALSE, map_legend_title = "") {
+  # continuous and n.contours are not working as expected. They are here for 
+  # future work
+  if (name_to_save == "") {
+    show_not_save = TRUE
+  } else {
+    show_not_save = FALSE
+    png(filename = paste0("plots/",name_to_save, ".png"), width = 548, height = 555, units = "px")
+  }
+  
+  if (continuous == TRUE | n.contours != FALSE){
+    bbox_map <- st_bbox(map_RO) 
+    grid <- st_as_stars(bbox_map, nx = 800, ny = 800, crs = st_crs(map_RO))
+    rasterized_data <- stars::st_rasterize(sf_file_to_plot[sf_data_to_plot], template = grid)
+    raster_clipped <- rasterized_data[borders_RO]
+    df_rasterized <- as.data.frame(raster_clipped)
+    names(df_rasterized) <- c("x", "y", "z")
+    df_rasterized <- filter(df_rasterized, !is.na(z))
+  }
+  
+  plot_map_data_RO <- ggplot()
+  
+  if (continuous) {
+    plot_map_data_RO <- plot_map_data_RO +
+      geom_raster(data = df_rasterized, aes(x = x, y = y, fill = z),
+                  interpolate = TRUE)
+  } else {
+    plot_map_data_RO <- plot_map_data_RO +
+      geom_sf(data = sf_file_to_plot,
+              aes(fill = .data[[sf_data_to_plot]]), 
+              color = NA)
+  }
+  plot_map_data_RO <- plot_map_data_RO +
+    scale_fill_viridis_c(
+      option = "plasma",
+      name = map_legend_title,
+      direction = -1,
+      breaks = pretty(sf_file_to_plot[[sf_data_to_plot]], n = 5))
+  
+  if (n.contours != FALSE) {
+    plot_map_data_RO <- plot_map_data_RO +
+      geom_contour(data = df_rasterized,
+                   aes(x = x, y = y, z = z),
+                   bins = n.contours,
+                   color = "black", 
+                   linewidth = 0.1)
+  }
+  
+  plot_map_data_RO <- plot_map_data_RO +
+    geom_sf(data = map_RO, 
+            fill = NA, 
+            color = "black", 
+            linewidth = 0.1) +
+    
+    coord_sf(
+      xlim = c(st_bbox(map_RO)["xmin"], st_bbox(map_RO)["xmax"]),
+      ylim = c(st_bbox(map_RO)["ymin"], st_bbox(map_RO)["ymax"]),
+      expand = TRUE,
+      label_graticule = "EWNS",
+      datum = st_crs(4326),
+    ) +
+    
+    # Legend
+    guides(fill = guide_colorbar(
+      title.position = "top", 
+      barwidth = unit(0.8, "npc"),
+      barheight = 1.5         
+    )) +
+    
+    
+    theme_minimal() +
+    theme(
+      legend.position = "bottom", 
+      legend.box.margin = margin(t = -10),
+      legend.title = element_text(size = 16, hjust = 0.5),
+      legend.text = element_text(size = 16),
+      
+      axis.title = element_blank(),
+      axis.text = element_text(size = 16, color = "black"),
+      
+      panel.grid.major = element_line(color = "gray60", linetype = "dashed", linewidth = 0.3)
+    )
+  
+  print(plot_map_data_RO)
+  if (!show_not_save) {
+    dev.off()
+  }
+}
+
+plot_map_RO(RO_diffuse_data, 
+            map_legend_title = expression("Diffuse irradiation (Wh/(m"^2*.day*"))"),
+            name_to_save = "map_diffuse_RO")
+plot_map_RO(RO_direct_normal_data, 
+            map_legend_title = expression("Direct normal irradiation (Wh/(m"^2*.day*"))"),
+            name_to_save = "map_direct_normal_RO")
+plot_map_RO(RO_global_horizontal_data, 
+            map_legend_title = expression("Global horizontal irradiation (Wh/(m"^2*.day*"))"),
+            name_to_save = "map_global_horizontal_RO")
+plot_map_RO(RO_tilted_latitude_data, 
+            map_legend_title = expression("Tilted latitude irradiation (Wh/(m"^2*.day*"))"),
+            name_to_save = "map_tilted_latitude_RO")
+RO_global_horizontal_data$hours_peak_sun = 365*RO_global_horizontal_data$ANNUAL/1000
+plot_map_RO(RO_global_horizontal_data, sf_data_to_plot = "hours_peak_sun",
+            map_legend_title = "Hours peak sun at GHI (h)",
+            name_to_save = "map_hours_peak_sun_RO")
+
+
+
+############## Now we write a function that returns irradiation given coordiantes
+solar_irradiation_by_coordinates = function(data_coords, shp_data, variable_name = "ANNUAL") {
+  input_points_sf <- st_as_sf(
+    data_coords,
+    coords = c("longitude", "latitude"),
+    crs = 4326
+  )
+  input_points_transformed <- st_transform(input_points_sf, st_crs(shp_data))
+  
+  join_result <- st_join(input_points_transformed, shp_data, join = st_nearest_feature)
+  
+  return(st_drop_geometry(join_result)[[variable_name]])
+}
+
+############# Now a function that returns coordinates given city name
+get_official_coordinates <- function(code_muni) {
+  city_target = cities_RO[cities_RO$geocodigo == code_muni,]
+  
+  if (nrow(city_target) == 0 || is.na(city_target$nome[1])) {
+    return(list(latitude = NA, longitude = NA))
+  }
+  
+  coords = st_coordinates(city_target$geometry)
+  
+  return(list(latitude = coords[1, "Y"],longitude = coords[1, "X"] ))
+}
+```
+
+
+```{r}
+# input data
+data_raw = read_excel("data.xlsx")
+
+# Now, lets include irradiation data
+# first, lets give the city its number
+data_raw <- data_raw %>%
+  left_join(st_drop_geometry(map_RO) %>% 
+              dplyr::select(nome, geocodigo), 
+            by = c("CITY_IBGE" = "nome"))
+
+
+coords_all_list = sapply(data_raw$geocodigo, get_official_coordinates, simplify = FALSE)
+coords_df = bind_rows(coords_all_list)
+
+data_raw <- data_raw %>%
+  mutate(
+    latitude = coords_df$latitude,
+    longitude = coords_df$longitude
+  ) %>%
+  filter(!is.na(latitude) & !is.na(longitude))
+
+# preparing the dataframe
+coords_to_process <- data_raw %>%
+  dplyr::select(latitude, longitude)
+
+data_raw$diffuse = solar_irradiation_by_coordinates(coords_to_process, RO_diffuse_data)
+
+data_raw$direct_normal = solar_irradiation_by_coordinates(coords_to_process, RO_direct_normal_data)
+
+data_raw$global_horizontal = solar_irradiation_by_coordinates(coords_to_process, RO_global_horizontal_data)
+
+data_raw$tilted_latitude = solar_irradiation_by_coordinates(coords_to_process, RO_tilted_latitude_data)
+```
+
+```{r}
+# removing outliers
+data_raw$final_yield = data_raw$TOTAL_kWh/data_raw$kWp
+data_raw$hours_peak_sun = 365*data_raw$global_horizontal/1000
+data_raw$PR_GHI = data_raw$final_yield/data_raw$hours_peak_sun*100
+data_raw$CUF = data_raw$TOTAL_kWh/(data_raw$inv_total_power*365*24)*100
+data_raw$total_number_of_MPPTs = data_raw$number_of_MPPTs*data_raw$INV_QNT
+data_raw$total_number_of_DC_inputs = data_raw$number_of_DC_inputs*data_raw$INV_QNT
+# Lets look at the data
+summary(data_raw)
+# final_yield, ISF and PR_GUI appear very disperse
+# lets look at them
+par(mar = c(5.1, 4.1, 4.1, 2.1))
+boxplot(data_raw$final_yield)
+hist(data_raw$final_yield)
+plot(density(data_raw$final_yield))
+nrow(data_raw)
+
+boxplot(data_raw$ISF)
+hist(data_raw$ISF)
+plot(density(data_raw$ISF))
+
+boxplot(data_raw$PR_GHI)
+hist(data_raw$PR_GHI)
+plot(density(data_raw$PR_GHI))
+
+boxplot(data_raw$CUF)
+hist(data_raw$CUF)
+plot(density(data_raw$CUF))
+
+# Outliers. Lets remove using IQR for PR_GHI
+iqr_value_PR_GHI = IQR(data_raw$PR_GHI)
+Q1_PR_GHI = quantile(data_raw$PR_GHI, 0.25)
+Q3_PR_GHI = quantile(data_raw$PR_GHI, 0.75)
+low_value_PR_GHI = Q1_PR_GHI - 1.5*iqr_value_PR_GHI
+high_value_PR_GHI = Q3_PR_GHI + 1.5*iqr_value_PR_GHI
+
+data_raw$outliers = data_raw$PR_GHI > high_value_PR_GHI | data_raw$PR_GHI <low_value_PR_GHI
+
+data_clean1 = data_raw[!data_raw$outliers,]
+nrow(data_clean1)
+# Lets see
+summary(data_clean1)
+# final_yield values seem ok. ISF values still look disperse. Lets give it a closer look
+boxplot(data_clean1$final_yield)
+hist(data_clean1$final_yield)
+plot(density(data_clean1$final_yield))
+# Seems ok, with a few outliers, which is acceptable
+# Lets look at ISF
+boxplot(data_clean1$ISF)
+hist(data_clean1$ISF)
+plot(density(data_clean1$ISF))
+# Seems ok
+boxplot(data_clean1$PR_GHI)
+hist(data_clean1$PR_GHI)
+plot(density(data_clean1$PR_GHI))
+# Seems ok, with a few outliers, which is acceptable
+# ok, everything seems ok. Lets continue
+boxplot(data_clean1$CUF)
+hist(data_clean1$CUF)
+plot(density(data_clean1$CUF))
+
+data_cleanest = data_clean1
+
+
+
+### Lets plot full samples and clean samples
+png(filename = "plots/PR_GHI_full_clean_samples.png", width = 548, height = 545, units = "px")
+par(mar = c(8.5, 4.1, 2.1, 2.1))
+bp = boxplot(data_raw$PR_GHI, data_cleanest$PR_GHI,
+             xlab = NA,
+             ylab = "Performance ratio at GHI (%)",
+             col = "lightblue", cex.axis = 1.3, cex.lab = 1.3, 
+             cex = 1.3, las = 3, outpch = 16, outcol = "red",
+             names = c("Full samples", "Clean samples"))
+grid(nx = NA, ny = NULL, lty = 2)
+ymax.bp = max(bp$stats[5,], bp$out)
+ymin.bp = min(bp$stats[1,], bp$out)
+yrange.bp = ymax.bp - ymin.bp
+text(x = 1:length(bp$n), y = ymax.bp + 0.1*yrange.bp, 
+     labels = bp$n, cex = 1.3, xpd = TRUE)
+dev.off()
+```
+
+
+```{r}
+# plotting map with data count
+city_counts_combined <- data_raw %>%
+  group_by(geocodigo) %>%
+  summarise(Samples = n(), .groups = 'drop') %>%
+  left_join(
+    data_cleanest %>%
+      group_by(geocodigo) %>%
+      summarise(Samples_clean = n(), .groups = 'drop'),
+    by = "geocodigo"
+  ) %>%
+  mutate(Samples_clean = replace_na(Samples_clean, 0))
+
+# adding to map_RO the number of city count
+map_city_count_RO <- map_RO %>%
+  left_join(city_counts_combined, by = "geocodigo") %>%
+  mutate(
+    Samples = replace_na(Samples, 0),
+    Samples_clean = replace_na(Samples_clean, 0)
+  )
+
+cities_RO <- cities_RO %>%
+  left_join(city_counts_combined, by = "geocodigo") %>%
+  mutate(
+    Samples = replace_na(Samples, 0),
+    Samples_clean = replace_na(Samples_clean, 0)
+  )
+
+plot_map_RO_samples = function(total_samples = TRUE, name_to_save = "") {
+  if (name_to_save == "") {
+    show_not_save = TRUE
+  } else {
+    show_not_save = FALSE
+    png(filename = paste0("plots/",name_to_save, ".png"), width = 548, height = 555, units = "px")
+  }
+  
+  if (total_samples) {
+    column_to_plot = sym("Samples")
+  } else {
+    column_to_plot = sym("Samples_clean")
+  }
+  
+  # lets order the data by largest
+  cities_RO_ordered <- cities_RO %>% filter(!!column_to_plot > 0)
+  cities_RO_ordered <- cities_RO_ordered %>% arrange(desc(!!column_to_plot))
+  
+  # plotting
+  plot_map_RO_samples <- ggplot() +
+    geom_sf(data = map_city_count_RO, aes(fill = !!column_to_plot), 
+            color = "gray10", linewidth = 0.1) +
+    
+    geom_sf_text(data = filter(cities_RO_ordered, !!column_to_plot > 0),
+                 aes(label = paste0(nome, "\n(", !!column_to_plot, ")")),
+                 size = 5,
+                 color = "black",
+                 check_overlap = TRUE) +
+    
+    # for colored map
+    scale_fill_viridis_c(
+      option = "plasma",
+      direction = -1,
+      name = "#Samples (n)",
+      breaks = pretty(cities_RO_ordered[[as.character(column_to_plot)]], n = 5)
+    ) +
+    
+    coord_sf(
+      xlim = c(st_bbox(map_RO)["xmin"], st_bbox(map_RO)["xmax"]),
+      ylim = c(st_bbox(map_RO)["ymin"], st_bbox(map_RO)["ymax"]),
+      expand = TRUE,
+      label_graticule = "EWNS",
+      datum = st_crs(4326),
+    ) +
+    
+    guides(
+      fill = guide_colorbar(
+        title.position = "top", 
+        barwidth = unit(0.8, "npc"),
+        barheight = 1.5         
+      )
+    ) +
+    
+    labs(title = NULL, subtitle = NULL, caption = NULL) +
+    
+    theme_minimal() +
+    theme(
+      legend.position = "bottom", 
+      legend.box.margin = margin(t = -10),
+      legend.title = element_text(size = 16, hjust = 0.5),
+      legend.text = element_text(size = 16),
+      
+      axis.title = element_blank(),
+      axis.text = element_text(size = 16, color = "black"),
+      
+      panel.grid.major = element_line(color = "gray60", linetype = "dashed", linewidth = 0.3)
+    )
+  
+  print(plot_map_RO_samples)
+  if (!show_not_save) {
+    dev.off()
+  }
+}
+
+# warnings expected:
+# In st_point_on_surface.sfc(sf::st_zm(x)) :
+#   st_point_on_surface may not give correct results for longitude/latitude data
+suppressWarnings(plot_map_RO_samples(TRUE, "map_RO_samples_total"))
+suppressWarnings(plot_map_RO_samples(FALSE, "map_RO_samples_clean"))
+```
+
+
+
+```{r}
+# now, we will plot a map with unit conservations, urban areas and others
+# we download and save for local use
+# urban_area_BR <- st_read("maps/BC250/urban_areas/lml_area_densamente_edificada_a.shp")
+# urban_area_BR <- st_transform(urban_area_BR, st_crs(map_RO))
+# urban_area_BR = st_make_valid(urban_area_BR) # fixing errors with geometry
+# urban_area_RO = st_intersection(urban_area_BR, borders_RO)
+# saveRDS(urban_area_RO, "maps/urban_area_RO.rds")
+urban_area_RO = readRDS("maps/urban_area_RO.rds")
+
+# conservation_unit_brazil = read_conservation_units(simplified = FALSE)
+# conservation_unit_brazil = st_make_valid(conservation_unit_brazil) # fixing errors with geometry
+# conservation_unit_RO = st_intersection(conservation_unit_brazil, borders_RO)
+# saveRDS(conservation_unit_RO, "maps/conservation_unit_RO.rds")
+conservation_unit_RO = readRDS("maps/conservation_unit_RO.rds")
+
+# indigenous lands from FUNAI. We crop to RO state borders
+indigenous_lands_RO <- st_read("maps/indigenous_lands_RO/tis_poligonaisPolygon.shp")
+indigenous_lands_RO <- st_transform(indigenous_lands_RO, st_crs(map_RO)) 
+indigenous_lands_RO = st_make_valid(indigenous_lands_RO)
+indigenous_lands_RO <- st_intersection(indigenous_lands_RO, borders_RO)
+
+png(filename = "plots/map_RO_UC_and_others.png", width = 548, height = 555, units = "px")
+map_layers_plot <- ggplot() +
+  geom_sf(data = map_RO, fill = "gray95", color = "gray20", linewidth = 0.1) +
+  
+  geom_sf(data = conservation_unit_RO, aes(fill = "Conservation unit"), color = NA, alpha = 0.7) +
+  
+  geom_sf(data = indigenous_lands_RO, aes(fill = "Indigenous land"), color = "black", linewidth = 0.05, alpha = 0.8) +
+  
+  geom_sf(data = urban_area_RO, aes(fill = "Urban area"), color = "black", linewidth = 0.05, alpha = 0.8) +
+  
+  geom_sf(data = borders_RO, fill = NA, color = "black", linewidth = 0.5) +
+  
+  coord_sf(
+    xlim = c(st_bbox(borders_RO)["xmin"], st_bbox(borders_RO)["xmax"]),
+    ylim = c(st_bbox(borders_RO)["ymin"], st_bbox(borders_RO)["ymax"]),
+    expand = TRUE,
+    label_graticule = "EWNS",
+    datum = st_crs(4326),
+  ) +
+  
+  scale_fill_manual(
+    name = "",
+    values = c("Conservation unit" = "darkgreen",
+               "Indigenous land" = "yellow",
+               "Urban area" = "red"),
+    guide = guide_legend(override.aes = list(
+      fill = c("darkgreen", "yellow", "red"),
+      color = c("black", "black", "black"),
+      linetype = "solid",
+      linewidth = c(0.5, 0.5, 0.5)
+    ))
+  ) +
+  
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box.margin = margin(t = -10),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 16),
+    
+    axis.title = element_blank(),
+    axis.text = element_text(size = 16, color = "black"),
+    panel.grid.major = element_line(color = "gray60", linetype = "dashed", linewidth = 0.3)
+  )
+
+print(map_layers_plot)
+dev.off()
+```
+
+
+```{r}
+# Lets plot the clean data
+### Inverter brand
+png(filename = "plots/inv_frequency.png", width = 548, height = 545, units = "px")
+par(mar = c(6.5, 4.1, 2.1, 2.1))
+inv_frequency = sort(table(data_cleanest$INV_MAKER), decreasing = TRUE)
+barplot(inv_frequency,
+        ylab = "#Samples (n)",
+        xlab = NA,
+        cex.axis = 1.3, 
+        cex.lab = 1.3, 
+        cex = 1.3,
+        horiz = FALSE,
+        las = 2,
+        col = "lightblue")
+dev.off()
+
+### Inverter model
+png(filename = "plots/inv_model.png", width = 548, height = 545, units = "px")
+par(mar = c(8.4, 4.1, 2.1, 2.1))
+inv_frequency_model = sort(table(data_cleanest$INV_MODEL), decreasing = TRUE)[1:10]
+barplot(inv_frequency_model,
+        ylab = "#Samples (n)",
+        xlab = NA,
+        cex.axis = 1.3, 
+        cex.lab = 1.3, 
+        cex = 1.3,
+        horiz = FALSE,
+        las = 2,
+        col = "lightblue")
+dev.off()
+
+### PV module brand
+png(filename = "plots/module_maker.png", width = 548, height = 545, units = "px")
+par(mar = c(7.5, 4.1, 2.1, 2.1))
+mod_frequency = sort(table(data_cleanest$MOD_MAKER), decreasing = TRUE)[1:10]
+barplot(mod_frequency,
+        ylab = "#Samples (n)",
+        xlab = NA,
+        cex.axis = 1.3, 
+        cex.lab = 1.3, 
+        cex = 1.3,
+        horiz = FALSE,
+        las = 2,
+        col = "lightblue")
+dev.off()
+
+### PV module model
+png(filename = "plots/module_model.png", width = 548, height = 545, units = "px")
+par(mar = c(12.5, 4.1, 2.1, 2.1))
+mod_frequency = sort(table(data_cleanest$MOD_MODEL), decreasing = TRUE)[1:10]
+barplot(mod_frequency,
+        ylab = "#Samples (n)",
+        xlab = NA,
+        cex.axis = 1.3, 
+        cex.lab = 1.3, 
+        cex = 1.3,
+        horiz = FALSE,
+        las = 2,
+        col = "lightblue")
+dev.off()
+
+### CITYs
+png(filename = "plots/city.png", width = 548, height = 545, units = "px")
+par(mar = c(11, 4.1, 2.1, 2.1))
+frequencia_CITYs = sort(table(data_cleanest$CITY_IBGE), decreasing = TRUE)[1:10]
+barplot(frequencia_CITYs,
+        ylab = "#Samples (n)",
+        xlab = NA,
+        cex.axis = 1.3, 
+        cex.lab = 1.3, 
+        cex = 1.3,
+        horiz = FALSE,
+        las = 2,
+        col = "lightblue")
+dev.off()
+
+
+# function to plot boxplots
+plot_boxplots_Yf_PRGHI_CUF = function(data_to_be_plot, column_to_plot,
+                                      mar.to.plot = c(8.4, 4.1, 2.1, 2.1),
+                                      show_not_save = FALSE) {
+  ylab.to.plot = c("Final yield (kWh/kWp)", "Performance ratio at GHI (%)", "Capacity utilization factor (%)")
+  yvar.to.plot = c("final_yield", "PR_GHI", "CUF")
+  name_to_save = c(paste0("plots/final_yield_", column_to_plot,".png"),
+                   paste0("plots/PR_GHI_", column_to_plot,".png"),
+                   paste0("plots/CUF_", column_to_plot,".png"))
+  
+  # first, we sort the data and filter to at most 10
+  data_names_top10 <- data_to_be_plot %>%
+    count(!!sym(column_to_plot), sort = TRUE) %>%
+    slice_head(n = 10) %>%
+    pull(!!sym(column_to_plot))
+  
+  data_to_be_plot_top10 <- data_to_be_plot %>%
+    filter(!!sym(column_to_plot) %in% data_names_top10) %>%
+    mutate({{ column_to_plot }} := factor(!!sym(column_to_plot), levels = data_names_top10))
+  
+  
+  for (i in 1:3) {
+    if (!show_not_save) {
+      png(filename = name_to_save[i], width = 548, height = 545, units = "px")
+    }
+    par(mar = mar.to.plot)
+    formula_to_plot = as.formula(paste0(yvar.to.plot[i], " ~ ", column_to_plot))
+    bp = boxplot(formula_to_plot,
+                 data = data_to_be_plot_top10,
+                 xlab = NA,
+                 ylab = ylab.to.plot[i],
+                 col = "lightblue",
+                 cex.axis = 1.3, 
+                 cex.lab = 1.3, 
+                 cex = 1.3,
+                 las = 3, outpch = 16, outcol = "red")
+    
+    grid(nx = NA, ny = NULL, lty = 2)
+    ymax.bp = max(bp$stats[5,], bp$out)
+    ymin.bp = min(bp$stats[1,], bp$out)
+    yrange.bp = ymax.bp - ymin.bp
+    text(x = 1:length(bp$n), y = ymax.bp + 0.1*yrange.bp, 
+         labels = bp$n, cex = 1.3, xpd = TRUE)
+    
+    if (!show_not_save) {
+      dev.off()
+    }
+  }
+}
+
+
+plot_boxplots_Yf_PRGHI_CUF(data_cleanest, "INV_MAKER", c(6.5, 4.1, 2.1, 2.1))
+plot_boxplots_Yf_PRGHI_CUF(data_cleanest, "INV_MODEL", c(8.4, 4.1, 2.1, 2.1))
+plot_boxplots_Yf_PRGHI_CUF(data_cleanest, "MOD_MAKER", c(7.0, 4.1, 2.1, 2.1))
+plot_boxplots_Yf_PRGHI_CUF(data_cleanest, "MOD_MODEL", c(12.5, 4.1, 2.1, 2.1))
+
+# function to plot scaterplots for final yield, PR_GHI and CUF
+
+plot_scaterplot_points_Yf_PRGHI_CUF = function(data_to_be_plot, column_to_plot, 
+                                               xlab_to_plot = "", show_not_save = FALSE) {
+  ylab.to.plot = c("Final yield (kWh/kWp)", "Performance ratio at GHI (%)", "Capacity utilization factor (%)")
+  yvar.to.plot = c("final_yield", "PR_GHI", "CUF")
+  name_to_save = c(paste0("plots/final_yield_", column_to_plot,".png"),
+                   paste0("plots/PR_GHI_", column_to_plot,".png"),
+                   paste0("plots/CUF_", column_to_plot,".png"))
+  for (i in 1:3) {
+    if (!show_not_save) {
+      png(filename = name_to_save[i], width = 548, height = 545, units = "px")
+    }
+    par(mar = c(4.2, 4.5, 2.1, 2.1))
+    plot(data_to_be_plot[[column_to_plot]], data_to_be_plot[[yvar.to.plot[i]]],
+         xlab = xlab_to_plot,
+         ylab = ylab.to.plot[i],
+         col = ifelse(data_to_be_plot$p_type, "darkblue", "cyan"),
+         cex.axis = 1.3, 
+         cex.lab = 1.3, 
+         cex = 1.3, pch = ifelse(data_to_be_plot$monofacial, 16, 15))
+    grid()
+    points(data_to_be_plot[[column_to_plot]], data_to_be_plot[[yvar.to.plot[i]]],
+           col = ifelse(data_to_be_plot$p_type, "darkblue", "cyan"), cex = 1.3, pch = ifelse(data_to_be_plot$monofacial, 16, 15))
+    if (!show_not_save) {
+      dev.off()
+    }
+  }
+}
+
+
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "ISF", "Inverter Sizing Factor (ISF)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "kWp", "DC Input Power (kWp)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "TC_Isc", 
+                                    expression("Temperature coefficient of short-circuit current ("*I["sc"]*"; %/"^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "TC_Voc", 
+                                    expression("Temperature coefficient of open-circuit voltage ("*V["oc"]*"; %/"^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "TC_Pmax", 
+                                    expression("Temperature coefficient of maximum power ("*P["max"]*"; %/"^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "module_efficiency", "Module efficiency (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "inv_max_efficiency", "Inverter maximum efficiency (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "inv_Euro_efficiency", "Inverter European efficiency (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "total_number_of_MPPTs", "Number of MPPTs")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "total_number_of_DC_inputs", "Number of DC inputs")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "DC_inputs_over_MPPTs", "Number of DC inputs over number of MPPTs")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "diffuse", expression("Diffuse irradiation (Wh/(m"^2~"day))"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "global_horizontal", expression("Global horizontal irradiation (Wh/(m"^2~"day))"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "tilted_latitude", expression("Tilted latitude irradiation (Wh/(m"^2~"day))"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "tilted_latitude", expression("Tilted latitude irradiation (Wh/(m"^2~"day))"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "final_yield", "Final yield (kWh/kWp)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "PR_GHI", "Performance ratio at GHI (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "CUF", "Capacity utilization factor (%)")
+```
+
+
+```{r}
+# Lets start with a null model
+model.PR_GHI.1 = gam(PR_GHI ~ 1, data = data_cleanest)
+# lets fit models for solar irradiation
+model.PR_GHI.2.n = list()
+model.PR_GHI.2.n[[1]] = gam(PR_GHI ~ s(diffuse), data = data_cleanest)
+model.PR_GHI.2.n[[2]] = gam(PR_GHI ~ s(direct_normal), data = data_cleanest)
+model.PR_GHI.2.n[[3]] = gam(PR_GHI ~ s(global_horizontal), data = data_cleanest)
+model.PR_GHI.2.n[[4]] = gam(PR_GHI ~ s(tilted_latitude), data = data_cleanest)
+# lets see at the p-values
+p_value.PR_GHI.2 = 0
+p_value.PR_GHI.2[1] = anova(model.PR_GHI.1, model.PR_GHI.2.n[[1]])$"Pr(>F)"[2]
+p_value.PR_GHI.2[2] = anova(model.PR_GHI.1, model.PR_GHI.2.n[[2]])$"Pr(>F)"[2]
+p_value.PR_GHI.2[3] = anova(model.PR_GHI.1, model.PR_GHI.2.n[[3]])$"Pr(>F)"[2]
+p_value.PR_GHI.2[4] = anova(model.PR_GHI.1, model.PR_GHI.2.n[[4]])$"Pr(>F)"[2]
+adjusted_p_values.PR_GHI.2 = p.adjust(p_value.PR_GHI.2, method = "BH")
+# 0.256638 0.256638 0.256638 0.256638
+# last three have approximately the same p-value. Lets check AIC
+AIC.models.PR_GHI.2 = c(AIC(model.PR_GHI.1), sapply(model.PR_GHI.2.n, AIC))
+# 1006.711 1007.210 1006.975 1006.674 1006.847
+# model for global horizontal irradiance has slightly smaller AIC. Lets check
+summary(model.PR_GHI.2.n[[3]]) # smooth is not a line
+plot(model.PR_GHI.2.n[[3]])
+# smooth not different from a line, p-value really high, and the estimated smooth includes zero.
+# let fit a linear relationship to see
+model.PR_GHI.2.n.3 = gam(PR_GHI ~ global_horizontal, data = data_cleanest)
+summary(model.PR_GHI.2.n.3) # p > 0.5
+anova(model.PR_GHI.1, model.PR_GHI.2.n.3) # p > 0.5
+AIC(model.PR_GHI.2.n.3) # 1008.263
+# Lets consider the null module as the best model. Now, lets include the other variables
+
+# everything looks ok. Lets move to include the other variables
+### Now, we have on na in our list. Lets fit another model 1 so that we can compare
+model.PR_GHI.2 = model.PR_GHI.1
+model.3.PR_GHI.n = list()
+model.3.PR_GHI.n[[1]] = gam(PR_GHI ~ MOD_MAKER, data = data_cleanest)
+model.3.PR_GHI.n[[2]] = gam(PR_GHI ~ MOD_MODEL, data = data_cleanest)
+model.3.PR_GHI.n[[3]] = gam(PR_GHI ~ s(MOD_POWER), data = data_cleanest)
+model.3.PR_GHI.n[[4]] = gam(PR_GHI ~ s(MOD_QNT), data = data_cleanest)
+model.3.PR_GHI.n[[5]] = gam(PR_GHI ~ INV_MAKER, data = data_cleanest)
+model.3.PR_GHI.n[[6]] = gam(PR_GHI ~ INV_MODEL, data = data_cleanest)
+model.3.PR_GHI.n[[7]] = gam(PR_GHI ~ s(INV_POWER), data = data_cleanest)
+model.3.PR_GHI.n[[8]] = gam(PR_GHI ~ INV_QNT, data = data_cleanest)
+model.3.PR_GHI.n[[9]] = gam(PR_GHI ~ CITY_IBGE, data = data_cleanest)
+model.3.PR_GHI.n[[10]] = gam(PR_GHI ~ s(ISF), data = data_cleanest)
+model.3.PR_GHI.n[[11]] = gam(PR_GHI ~ s(kWp), data = data_cleanest)
+model.3.PR_GHI.n[[12]] = gam(PR_GHI ~ monofacial, data = data_cleanest)
+model.3.PR_GHI.n[[13]] = gam(PR_GHI ~ p_type, data = data_cleanest)
+model.3.PR_GHI.n[[14]] = gam(PR_GHI ~ s(TC_Isc, k = 6), data = data_cleanest)
+model.3.PR_GHI.n[[15]] = gam(PR_GHI ~ s(TC_Voc, k = 9), data = data_cleanest)
+model.3.PR_GHI.n[[16]] = gam(PR_GHI ~ s(TC_Pmax, k = 4), data = data_cleanest)
+model.3.PR_GHI.n[[17]] = gam(PR_GHI ~ s(module_efficiency), data = data_cleanest)
+model.3.PR_GHI.n[[18]] = gam(PR_GHI ~ s(inv_max_efficiency), data = data_cleanest)
+model.3.PR_GHI.n[[19]] = gam(PR_GHI ~ s(inv_Euro_efficiency), data = data_cleanest)
+model.3.PR_GHI.n[[20]] = gam(PR_GHI ~ s(DC_inputs_over_MPPTs, k = 5), data = data_cleanest)
+model.3.PR_GHI.n[[21]] = gam(PR_GHI ~ s(total_number_of_MPPTs, k = 5), data = data_cleanest)
+model.3.PR_GHI.n[[22]] = gam(PR_GHI ~ s(total_number_of_DC_inputs), data = data_cleanest)
+# Lets calculate p-values
+p_value.PR_GHI.3 = 0
+p_value.PR_GHI.3[1] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[1]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[2] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[2]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[3] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[3]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[4] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[4]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[5] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[5]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[6] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[6]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[7] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[7]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[8] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[8]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[9] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[9]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[10] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[10]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[11] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[11]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[12] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[12]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[13] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[13]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[14] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[14]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[15] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[15]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[16] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[16]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[17] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[16]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[18] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[16]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[19] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[16]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[20] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[16]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[21] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[16]])$"Pr(>F)"[2]
+p_value.PR_GHI.3[22] = anova(model.PR_GHI.2, model.3.PR_GHI.n[[16]])$"Pr(>F)"[2]
+# Since we are performing several test, our calculated p-value is inflated
+# We need to correct this p-value. We will use the False Discovery Rate 
+# which is not as strict as other methodologies (e.g., Bonferroni correction)
+adjusted_p_values.PR_GHI.3 = p.adjust(p_value.PR_GHI.3, method = "BH")
+# 0.3521579 0.3521579 0.9024860 0.6084445 0.5987776 0.9024860 0.6084445 0.5112384 0.9024860 0.9024860 0.6084445 0.3521579 0.9024860 0.2568560 0.3521579 0.3521579 0.3521579 0.3521579 0.3521579 0.3521579 0.3521579 0.3521579
+# After adjusting p-values, we see that we do not have anything that is statistically significant
+
+# Lets also take a look on AIC
+AIC.models.PR_GHI.3 = c(AIC(model.PR_GHI.2), sapply(model.3.PR_GHI.n, AIC))
+# 1006.711 1010.979 1012.568 1008.696 1008.141 1012.933 1036.996 1011.597 1007.627 1034.752 1008.684 1008.181 1006.694 1008.668 1000.352 1004.453 1006.758 1008.480 1008.366 1008.553 1008.124 1006.389 1008.392
+# The following models showed lower AIC than null model:
+# movo vs bifacial
+# TC_Isc
+# TC_Voc
+# total_number_of_MPPTs
+# Lets check
+# model for mono vs bifacial showed a very slight less AIC. Lets see
+summary(model.3.PR_GHI.n[[12]])
+# not statistically significant. Only statistical noisy. Also, AIC were very similar
+#################### TC_Isc
+summary(model.3.PR_GHI.n[[14]])
+# seems to be different from a line. Lets go deeper
+plot(model.3.PR_GHI.n[[14]])
+######### ploting for the paper
+png(filename = "plots/PR_GHI_TC_Isc_curve.png", width = 548, height = 545, units = "px")
+par(mar = c(4.2, 4.1, 1, 2))
+plot(model.3.PR_GHI.n[[14]], xlab = expression("Temperature coefficient of short-circuit current ("*I["sc"]*"; %/"^o*"C)"),
+     ylab = "Effect on performance ratio at GHI", lwd = 3,
+     main = NA, cex.axis = 1.3, cex.lab = 1.3, col = "darkblue")
+grid()
+dev.off()
+# it doesnt make physical sense. Its telling me that the effects of TC_Isc on PR_GHI decrease,
+# increases, and then decreases again. Looks like a case of overfitting. Lets check
+gam.check(model.3.PR_GHI.n[[14]])
+# seems ok. Lets fit again. From physical meaning, the effect of TC_Isc should be
+# increasing or decreasing. Lets see what happens when we fit a line
+model.3.PR_GHI.n.14 = gam(PR_GHI ~ TC_Isc, data = data_cleanest)
+summary(model.3.PR_GHI.n.14) # not statistically significant
+p_value.PR_GHI.3.14 = anova(model.PR_GHI.2, model.3.PR_GHI.n.14)$"Pr(>F)"[2]
+# p-value very high, even without correction: 0.2717665
+AIC.models.PR_GHI.3.14 = c(AIC(model.PR_GHI.2), AIC(model.3.PR_GHI.n.14))
+# AIC increased: 1006.711 1007.482
+# it seems a strong case of overfitting. Lets see what happens if we fit considering TC_Isc as a factor
+model.3.PR_GHI.n.14.2 = gam(PR_GHI ~ as.factor(TC_Isc), data = data_cleanest)
+summary(model.3.PR_GHI.n.14.2)
+# basically, as TC_Isc increases, PR_GHI decreases, but its effect are zero for
+# TC_ISC 0.048 and 0.05, and then again at 0.06 it has a strong decreasing effect
+# on PR_GHI. It does look like overfitting
+# In conclusion, it was a case of overfitting
+p_value.PR_GHI.3.14.2 = anova(model.PR_GHI.2, model.3.PR_GHI.n.14.2)$"Pr(>F)"[2] # 0.02466181
+AIC.models.PR_GHI.3.14.2 = c(AIC(model.PR_GHI.2), AIC(model.3.PR_GHI.n.14.2))
+# 1006.711 1003.695
+# while TC_Isc does affect PR_GHI, it seems that this is a case of overfitting
+# because the relationship found between them is not physically sounding.
+#################### TC_Voc
+summary(model.3.PR_GHI.n[[15]]) # not different from a line. Lets see
+plot(model.3.PR_GHI.n[[15]])
+# it doesnt make physical sense. Its telling me that the effects of TC_Voc on PR_GHI
+# follows a second-degree equation. That is, it increases, and then decreases.
+# Looks like a case of overfitting. Lets check
+model.3.PR_GHI.n.15 = gam(PR_GHI ~ TC_Voc, data = data_cleanest)
+summary(model.3.PR_GHI.n.15) # not statistically significant
+p_value.PR_GHI.3.15 = anova(model.PR_GHI.2, model.3.PR_GHI.n.15)$"Pr(>F)"[2]
+# p-value very high, even without correction: 0.250685
+AIC.models.PR_GHI.3.15 = c(AIC(model.PR_GHI.2), AIC(model.3.PR_GHI.n.15))
+# AIC increased: 1006.711 1007.368
+# In conclusion, it was a case of overfitting
+#################### total_number_of_MPPTs
+summary(model.3.PR_GHI.n[[21]]) # not different from a line. Lets see
+plot(model.3.PR_GHI.n[[21]])
+# zero is included in all parts of the plot. Lets see what happens if we fit a line
+model.3.PR_GHI.n.21 = gam(PR_GHI ~ total_number_of_MPPTs, data = data_cleanest)
+summary(model.3.PR_GHI.n.21) # not statistically significant
+p_value.PR_GHI.3.21 = anova(model.PR_GHI.2, model.3.PR_GHI.n.21)$"Pr(>F)"[2]
+# p-value very high, even without correction: 0.9419185
+AIC.models.PR_GHI.3.21 = c(AIC(model.PR_GHI.2), AIC(model.3.PR_GHI.n.21))
+# AIC increased: 1006.711 1008.706
+# In conclusion, it was a case of overfitting
+# model 1 is the best
+best_model.PR_GHI = model.PR_GHI.1
+```
+
+
+```{r}
+# Ploting
+plot_p_values_and_AIC = function(p_values, AIC_values, name_predictors,
+                                 name_to_save = "") {
+  if (name_to_save == "") {
+    show_not_save = TRUE
+  } else {
+    show_not_save = FALSE
+    png(filename = paste0("plots/",name_to_save, ".png"), width = 548, height = 555, units = "px")
+  }
+  
+  par(mar = c(9, 4.2, 1, 3.5))
+  bar_p = barplot(p_values, ylab = "FDR adjusted p-values",
+                  xlab = NA, col = "lightblue", border = "black", xaxt = "n",
+                  cex.axis = 1.3, cex.lab = 1.3, cex = 1.3, mgp = c(2, 0.5, 0))
+  
+  abline(h = 0.05, col = "red", lty = 2, lwd = 2)
+  text(x = 2, y = 0.06, labels = "0.05 threshold", col = "red", cex = 1.5, adj = c(0,0))
+  
+  text(x = bar_p, y = par("usr")[3] , labels = name_predictors, xpd = TRUE,
+       srt = 90, adj = 1, cex = 1.3)
+  
+  par(new = TRUE)
+  p_values_length = length(p_values)
+  plot(x = bar_p, 
+       y = AIC_values, 
+       type = "p",
+       pch = 16,
+       col = ifelse(AIC_values == min(AIC_values, na.rm = T), "green3", "darkblue"), # Color points
+       axes = FALSE,
+       xlab = "", ylab = "",
+       xlim = c(min(bar_p) - 0.5, max(bar_p) + 0.5),
+       ylim = c(min(AIC_values, na.rm = T), max(AIC_values, na.rm = T)),
+       cex = 1.5)
+  axis(side = 4, cex.axis = 1.3) # side=4 is the right side
+  mtext("Akaike Information Criteria", side = 4, line = 2, cex = 1.3)
+  abline(h = min(AIC_values, na.rm = T), col = "green3", lty = 2, lwd = 2)
+  
+  if (!show_not_save) {
+    dev.off()
+  }
+}
+
+name_predictors_radiation = c("Null model", "Diffuse", 
+                              "Direct normal", "Global horizontal", 
+                              "Tilted latitude")
+plot_p_values_and_AIC(c(NA, adjusted_p_values.PR_GHI.2), AIC.models.PR_GHI.2,
+                      name_predictors_radiation, "p_values_radiation")
+
+name_predictors_env = c("Null model", "PV module brand", "PV module model", 
+                        "PV module power", "#PV module",
+                        "Inverter brand", "Inverter model",
+                        "Inverter power", "#Inverters",
+                        "City", "ISF", "kWp", "Mono vs. bifacial", "p vs. n type",
+                        "Temp Coeff Isc", "Temp Coeff Voc", "Temp Coeff Pmax",
+                        "Module efficiency", "Inv max efficiency", 
+                        "Inv Euro efficiency", "#DC inputs/#MPPTs", "#MPPTs",
+                        "#DC inputs")
+
+plot_p_values_and_AIC(c(NA, adjusted_p_values.PR_GHI.3), AIC.models.PR_GHI.3,
+                      name_predictors_env, "p_values_env")
+```
+
+
+
+```{r}
+# As nothing was statistically significant, lets plot a PDF
+PR_GHI_pdf = density(data_cleanest$PR_GHI)
+PR_GHI_pick_position = which.max(PR_GHI_pdf$y)
+PR_GHI_pick_value = PR_GHI_pdf$x[PR_GHI_pick_position]
+PR_GHI_pick_value
+PR_GUI_pdf_sd = sd(data_cleanest$PR_GHI)/sqrt(nrow(data_cleanest))
+PR_GUI_pdf_sdm = PR_GUI_pdf_sd/sqrt(nrow(data_cleanest))
+PR_GUI_pdf_mean = mean(data_cleanest$PR_GHI)
+
+# ploting PDF
+png(filename = "plots/PR_GHI_pdf.png", width = 548, height = 545, units = "px")
+par(mar = c(4.2, 4.1, 1, 2))
+plot(PR_GHI_pdf, xlab = "Performance ratio at GHI (%)", ylab = "Density", lwd = 3,
+     main = NA, cex.axis = 1.3, cex.lab = 1.3)
+grid()
+polygon(PR_GHI_pdf, col = "lightblue", border = "steelblue")
+dev.off()
+# exportar como 548 x 545
+
+# calculating the complement of the CDF (survival function)
+PR_GHI_quantiles = seq(40, 105, by = 0.01)
+
+PR_GHI_pdf_percentage_above <- sapply(PR_GHI_quantiles, function(q) {
+  index_above <- which(PR_GHI_pdf$x >= q)
+  if (length(index_above) > 1) {
+    x_above <- PR_GHI_pdf$x[index_above]
+    y_above <- PR_GHI_pdf$y[index_above]
+    return(sum(diff(x_above) * (y_above[-1] + y_above[-length(y_above)]) / 2))
+  } else {
+    return(0) # Se nenhum valor na densidade está acima do quantil
+  }
+})*100
+
+PR_GHI_table_percentage <- data.frame(
+  PR_GHI = PR_GHI_quantiles,
+  PR_GHI_pdf_percentage_above = PR_GHI_pdf_percentage_above
+)
+
+print(PR_GHI_table_percentage)
+write.csv2(PR_GHI_table_percentage, "PR_GHI_table_percentage.csv")
+
+# ploting the complement of the CDF (survival function)
+png(filename = "plots/PR_GHI_cdf.png", width = 548, height = 545, units = "px")
+par(mar = c(4.2, 4.1, 1, 2))
+plot(PR_GHI_quantiles, PR_GHI_pdf_percentage_above, type = "l", xlab = "Performance ratio at GHI (%)",
+     ylab = "Probability to exceed (%)", lwd = 3,
+     main = NA, cex.axis = 1.3, cex.lab = 1.3)
+grid()
+polygon(c(min(PR_GHI_quantiles), PR_GHI_quantiles), c(0, PR_GHI_pdf_percentage_above), 
+        col = "lightblue", border = "steelblue")
+dev.off()
+```
+
+
+```{r}
+# now that we now that PR_GHI is not statistically affected by anything, we can plot
+# lets calculate bootstrap measures
+set.seed(321)
+
+boot.all.statistic = function(d, i) {
+  return(c(mean = mean(d[i]), percentile10 = quantile(d[i], 0.1), 
+           percentile20 = quantile(d[i], 0.2), percentile30 = quantile(d[i], 0.3),
+           percentile40 = quantile(d[i], 0.4), percentile50 = quantile(d[i], 0.5),
+           percentile60 = quantile(d[i], 0.6), percentile70 = quantile(d[i], 0.7),
+           percentile80 = quantile(d[i], 0.8), percentile90 = quantile(d[i], 0.9),
+           lower_95_PI = quantile(d[i], 0.025), upper_95_PI = quantile(d[i], 0.975)))
+}
+
+
+PR_GUI_boot_all= boot(data_cleanest$PR_GHI, boot.all.statistic, 10000)
+
+PR_GUI_boot_all_mean = mean(PR_GUI_boot_all$t[,1])
+PR_GUI_boot_all_mean_95_CI = boot.ci(PR_GUI_boot_all, type = "bca")
+PR_GUI_boot_all_mean_lower_95_CI = PR_GUI_boot_all_mean_95_CI$bca[4]
+PR_GUI_boot_all_mean_upper_95_CI = PR_GUI_boot_all_mean_95_CI$bca[5]
+PR_GUI_boot_all_percentile_and_quantiles <- sapply(2:12, function(j) {
+  mean(PR_GUI_boot_all$t[, j])
+})
+
+# lets plot now
+data_cleanest$final_yield_estimated = PR_GUI_boot_all_mean*data_cleanest$hours_peak_sun/100
+xy_lim_inf_boot = min(c(data_cleanest$final_yield_estimated, data_cleanest$final_yield))
+xy_lim_sup_boot = max(c(data_cleanest$final_yield_estimated, data_cleanest$final_yield))
+
+# lest plot estimated vs measured
+png(filename = "plots/final_yield_estimated_measured.png", width = 548, height = 545, units = "px")
+par(mar = c(4.5, 4.6, 2.1, 2.1))
+plot(data_cleanest$final_yield_estimated, data_cleanest$final_yield,
+     xlab = "Estimated annual final yield (kWh/kWp)",
+     ylab = "Measured annual final yield (kWh/kWp)",
+     ylim = c(xy_lim_inf_boot, xy_lim_sup_boot),
+     xlim = c(xy_lim_inf_boot, xy_lim_sup_boot),
+     col = ifelse(data_cleanest$p_type, "darkblue", "cyan"),
+     cex.axis = 1.3, 
+     cex.lab = 1.3, 
+     cex = 1.3, pch = ifelse(data_cleanest$monofacial, 16, 15))
+grid()
+abline(0,1, lwd = 4, col = "darkred")
+
+points(data_cleanest$final_yield_estimated, data_cleanest$final_yield,
+       col = ifelse(data_cleanest$p_type, "darkblue", "cyan"), cex = 1.3, pch = ifelse(data_cleanest$monofacial, 16, 15))
+dev.off()
+```
+
+```{r}
+# lets plot maps
+RO_global_horizontal_data$PR_GHI = PR_GUI_boot_all_mean
+
+RO_global_horizontal_data$final_yield_estimated = RO_global_horizontal_data$PR_GHI/100*RO_global_horizontal_data$hours_peak_sun
+
+RO_global_horizontal_data$final_yield_lower_95_ci = PR_GUI_boot_all_mean_lower_95_CI/100*RO_global_horizontal_data$hours_peak_sun
+RO_global_horizontal_data$final_yield_upper_95_ci =  PR_GUI_boot_all_mean_upper_95_CI/100*RO_global_horizontal_data$hours_peak_sun
+
+RO_global_horizontal_data$final_yield_lower_95_pi =  PR_GUI_boot_all_percentile_and_quantiles[10]/100*RO_global_horizontal_data$hours_peak_sun
+RO_global_horizontal_data$final_yield_upper_95_pi =  PR_GUI_boot_all_percentile_and_quantiles[11]/100*RO_global_horizontal_data$hours_peak_sun
+
+RO_global_horizontal_data$CUF_over_ISF = RO_global_horizontal_data$final_yield_estimated/(365*24)*100
+
+
+plot_map_RO(RO_global_horizontal_data, "final_yield_estimated", 
+            map_legend_title = "Final yield (kWh/kWp)",
+            "final_yield_map_fit_RO")
+plot_map_RO(RO_global_horizontal_data, "final_yield_lower_95_ci",
+            map_legend_title = "Final yield lower 95% confidence interval (kWh/kWp)",
+            "final_yield_map_lower_95_ci_RO")
+plot_map_RO(RO_global_horizontal_data, "final_yield_upper_95_ci",
+            map_legend_title = "Final yield upper 95% confidence interval (kWh/kWp)",
+            "final_yield_map_upper_95_ci_RO")
+
+plot_map_RO(RO_global_horizontal_data, "final_yield_lower_95_pi",
+            map_legend_title = "Final yield lower 95% prediction interval (kWh/kWp)",
+            "final_yield_map_lower_95_pi_RO")
+plot_map_RO(RO_global_horizontal_data, "final_yield_upper_95_pi",
+            map_legend_title = "Final yield upper 95% prediction interval (kWh/kWp)",
+            "final_yield_map_upper_95_pi_RO")
+
+
+plot_map_RO(RO_global_horizontal_data, "CUF_over_ISF", 
+            map_legend_title = "capacity utilization factor over inverter sizing factor (%)",
+            "CUF_over_ISF_map_fit_RO")
+
+# lets save
+saveRDS(RO_global_horizontal_data, "maps/RO_global_horizontal_data_Yf_PR_GHI.rds")
+```
+
+
+
+```{r}
+# ok, so we found that only global horizontal radiation matters. But what about other meterological data?
+# lets investigate and, if something shows up, we test them
+
+###### lets test the Brazilian Daily  Weather  Gridded  Data (BR-DWGD)
+# https://doi.org/10.1002/joc.7731
+# https://sites.google.com/site/alexandrecandidoxavierufes/brazilian-daily-weather-gridded-data
+
+#### We will aggregate yearly data using these functions
+# stat_functions_Tmax = list(
+#   Tmax_mean = mean,
+#   Tmax_median = median,
+#   Tmax_min = min,
+#   Tmax_max = max,
+#   Tmax_sd = sd,
+#   Tmax_var = var,
+#   Tmax_sum = sum,
+#   Tmax_skew = moments::skewness,
+#   Tmax_kurt = moments::kurtosis
+# )
+
+# since the full files are large, I will not provide them in the GitHub directory
+# I will provide only the data for RO
+
+########################### Tmax
+# Tmax_BR = stack("/path/to/Tmax_20010101_20240320_BR-DWGD_UFES_UTEXAS_v_3.2.3.nc")
+#
+# layer_start_2023 <- 8036
+# layer_end_2023 <- 8400
+# Tmax_BR_2023 <- Tmax_BR[[layer_start_2023:layer_end_2023]]
+#
+# Tmax_borders_RO_projected <- st_transform(borders_RO, crs(Tmax_BR_2023))
+# Tmax_borders_RO_sp <- as(Tmax_borders_RO_projected, "Spatial")
+#
+# # first we crop a retangular box, then we adjust it
+# Tmax_RO_2023 = crop(Tmax_BR_2023, Tmax_borders_RO_sp)
+# Tmax_RO_2023 <- mask(Tmax_RO_2023, Tmax_borders_RO_sp)
+
+# # lets save it
+# writeRaster(Tmax_RO_2023, filename = "maps/Tmax_RO_2023.nc", format = "CDF", overwrite = TRUE)
+# Tmax_RO_2023 = stack("maps/Tmax_RO_2023.nc")
+# 
+# Tmax_RO_stats <- lapply(names(stat_functions_Tmax), function(name) {
+#   fun_to_apply <- stat_functions_Tmax[[name]]
+#   stat_raster <- raster::calc(Tmax_RO_2023, fun=fun_to_apply, na.rm=TRUE)
+#   names(stat_raster) <- name
+#   return(stat_raster)
+# })
+# fixing for sum = 0
+# Tmax_RO_stats$Tmax_sum[Tmax_RO_stats$Tmax_sum == 0] = NA 
+# 
+# Tmax_RO_stats <- raster::stack(Tmax_RO_stats)
+# Tmax_RO_stats <- rasterToPolygons(Tmax_RO_stats)
+# Tmax_RO_stats <- st_as_sf(Tmax_RO_stats)
+# Tmax_RO_stats <- st_transform(Tmax_RO_stats, st_crs(borders_RO))
+# Tmax_RO_stats <- st_intersection(Tmax_RO_stats, borders_RO)
+# 
+# saveRDS(Tmax_RO_stats, "maps/Tmax_RO_2023_stats.rds")
+Tmax_RO_stats = readRDS("maps/Tmax_RO_2023_stats.rds")
+
+plot_map_RO(Tmax_RO_stats, "Tmax_mean", 
+            map_legend_title = expression("Mean "*T["max"]*" ("^o*"C)"),
+            "Tmax_RO_mean")
+plot_map_RO(Tmax_RO_stats, "Tmax_median",
+            map_legend_title = expression("Median "*T["max"]*" ("^o*"C)"),
+            "Tmax_RO_median")
+plot_map_RO(Tmax_RO_stats, "Tmax_min",
+            map_legend_title = expression("Minimum "*T["max"]*" ("^o*"C)"),
+            "Tmax_RO_min")
+plot_map_RO(Tmax_RO_stats, "Tmax_max",
+            map_legend_title = expression("Maximum "*T["max"]*" ("^o*"C)"),
+            "Tmax_RO_max")
+plot_map_RO(Tmax_RO_stats, "Tmax_sd",
+            map_legend_title = expression("Standard deviation "*T["max"]*" ("^o*"C)"),
+            "Tmax_RO_sd")
+plot_map_RO(Tmax_RO_stats, "Tmax_var",
+            map_legend_title = expression("Variance "*T["max"]),
+            "Tmax_RO_var")
+plot_map_RO(Tmax_RO_stats, "Tmax_sum",
+            map_legend_title = expression("Sum "*T["max"]*" ("^o*"C)"),
+            "Tmax_RO_sum")
+plot_map_RO(Tmax_RO_stats, "Tmax_skew",
+            map_legend_title = expression("Skewness "*T["max"]),
+            "Tmax_RO_skew")
+plot_map_RO(Tmax_RO_stats, "Tmax_kurt",
+            map_legend_title = expression("Kurtosis "*T["max"]),
+            "Tmax_RO_kurt")
+
+
+
+
+
+coords_all <- data_cleanest %>%
+  dplyr::select(latitude, longitude)
+
+data_cleanest$Tmax_mean =  solar_irradiation_by_coordinates(coords_all,
+                                                            Tmax_RO_stats, variable_name = "Tmax_mean")
+data_cleanest$Tmax_median = solar_irradiation_by_coordinates(coords_all,
+                                                             Tmax_RO_stats, variable_name = "Tmax_median")
+data_cleanest$Tmax_min = solar_irradiation_by_coordinates(coords_all,
+                                                          Tmax_RO_stats, variable_name = "Tmax_min")
+data_cleanest$Tmax_max = solar_irradiation_by_coordinates(coords_all,
+                                                          Tmax_RO_stats, variable_name = "Tmax_max")
+data_cleanest$Tmax_sd = solar_irradiation_by_coordinates(coords_all,
+                                                         Tmax_RO_stats, variable_name = "Tmax_sd")
+data_cleanest$Tmax_var = solar_irradiation_by_coordinates(coords_all,
+                                                          Tmax_RO_stats, variable_name = "Tmax_var")
+data_cleanest$Tmax_sum = solar_irradiation_by_coordinates(coords_all,
+                                                          Tmax_RO_stats, variable_name = "Tmax_sum")
+data_cleanest$Tmax_skew = solar_irradiation_by_coordinates(coords_all,
+                                                           Tmax_RO_stats, variable_name = "Tmax_skew")
+data_cleanest$Tmax_kurt = solar_irradiation_by_coordinates(coords_all,
+                                                           Tmax_RO_stats, variable_name = "Tmax_kurt")
+
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmax_mean", expression("Mean "*T["max"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmax_median", expression("Median "*T["max"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmax_min", expression("Minimum "*T["max"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmax_max", expression("Maximum "*T["max"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmax_sd", expression("Standard deviation "*T["max"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmax_var", expression("Variance "*T["max"]))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmax_sum", expression("Sum "*T["max"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmax_skew", expression("Skewness "*T["max"]))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmax_kurt", expression("Kurtosis "*T["max"]))
+
+
+model.Tmax = list()
+model.Tmax[[1]] = gam(PR_GHI ~ s(Tmax_mean), data = data_cleanest)
+model.Tmax[[2]] = gam(PR_GHI ~ s(Tmax_median), data = data_cleanest)
+model.Tmax[[3]] = gam(PR_GHI ~ s(Tmax_min), data = data_cleanest)
+model.Tmax[[4]] = gam(PR_GHI ~ s(Tmax_max), data = data_cleanest)
+model.Tmax[[5]] = gam(PR_GHI ~ s(Tmax_sd), data = data_cleanest)
+model.Tmax[[6]] = gam(PR_GHI ~ s(Tmax_var), data = data_cleanest)
+model.Tmax[[7]] = gam(PR_GHI ~ s(Tmax_sum), data = data_cleanest)
+model.Tmax[[8]] = gam(PR_GHI ~ s(Tmax_skew), data = data_cleanest)
+model.Tmax[[9]] = gam(PR_GHI ~ s(Tmax_kurt), data = data_cleanest)
+# Lets calculate p-values
+p_value.Tmax = 0
+p_value.Tmax[1] = anova(best_model.PR_GHI, model.Tmax[[1]])$"Pr(>F)"[2]
+p_value.Tmax[2] = anova(best_model.PR_GHI, model.Tmax[[2]])$"Pr(>F)"[2]
+p_value.Tmax[3] = anova(best_model.PR_GHI, model.Tmax[[3]])$"Pr(>F)"[2]
+p_value.Tmax[4] = anova(best_model.PR_GHI, model.Tmax[[4]])$"Pr(>F)"[2]
+p_value.Tmax[5] = anova(best_model.PR_GHI, model.Tmax[[5]])$"Pr(>F)"[2]
+p_value.Tmax[6] = anova(best_model.PR_GHI, model.Tmax[[6]])$"Pr(>F)"[2]
+p_value.Tmax[7] = anova(best_model.PR_GHI, model.Tmax[[7]])$"Pr(>F)"[2]
+p_value.Tmax[8] = anova(best_model.PR_GHI, model.Tmax[[8]])$"Pr(>F)"[2]
+p_value.Tmax[9] = anova(best_model.PR_GHI, model.Tmax[[9]])$"Pr(>F)"[2]
+# Since we are performing several test, our calculated p-value is inflated
+# We need to correct this p-value. We will use the False Discovery Rate 
+# which is not as strict as other methodologies (e.g., Bonferroni correction)
+# Note: on reality, we should correct the p-value of all tests. That would result
+# in a larger p-value. Since we are just exploring, what we are doing is enough
+adjusted_p_values.Tmax = p.adjust(p_value.Tmax, method = "BH")
+# 0.3860698 0.3860698 0.3860698 0.3860698 0.3860698 0.3860698 0.3860698 0.3860698 0.3860698
+# After adjusting p-values, we see that we do not have anything that is statistically significant
+
+# Lets also take a look on AIC
+AIC_statistical_models.Tmax = c(AIC(best_model.PR_GHI), sapply(model.Tmax, AIC))
+# -301.1569 -300.2429 -300.1968 -300.3308 -298.5460 -299.8381 -299.7513 -300.2429 -300.0547 -300.4881
+# best model is still the previous model
+name_predictors_Tmax = c("Null model", expression("Mean" ~ T["max"]), 
+                         expression("Median" ~ T["max"]),
+                         expression("Minimum" ~ T["max"]), expression("Maximum" ~ T["max"]),
+                         expression("SD" ~ T["max"]),
+                         expression("Variance" ~ T["max"]), expression("Sum" ~ T["max"]),
+                         expression("Skewness" ~ T["max"]), expression("Kurtosis" ~ T["max"]))
+plot_p_values_and_AIC(c(NA, adjusted_p_values.Tmax), AIC_statistical_models.Tmax,
+                      name_predictors_Tmax, "Tmax_RO_p_values")
+
+
+
+
+
+
+
+
+
+
+########################### Tmin
+# stat_functions_Tmin = list(
+#   Tmin_mean = mean,
+#   Tmin_median = median,
+#   Tmin_min = min,
+#   Tmin_max = max,
+#   Tmin_sd = sd,
+#   Tmin_var = var,
+#   Tmin_sum = sum,
+#   Tmin_skew = moments::skewness,
+#   Tmin_kurt = moments::kurtosis
+# )
+# Tmin_BR = stack("/path/to/Tmin_20010101_20240320_BR-DWGD_UFES_UTEXAS_v_3.2.3.nc")
+# 
+# layer_start_2023 <- 8036
+# layer_end_2023 <- 8400
+# Tmin_BR_2023 <- Tmin_BR[[layer_start_2023:layer_end_2023]]
+# 
+# Tmin_borders_RO_projected <- st_transform(borders_RO, crs(Tmin_BR_2023))
+# Tmin_borders_RO_sp <- as(Tmin_borders_RO_projected, "Spatial")
+# 
+# # first we crop a retangular box, then we adjust it
+# Tmin_RO_2023 = crop(Tmin_BR_2023, Tmin_borders_RO_sp)
+# Tmin_RO_2023 <- mask(Tmin_RO_2023, Tmin_borders_RO_sp)
+# 
+# # lets save it
+# writeRaster(Tmin_RO_2023, filename = "maps/Tmin_RO_2023.nc", format = "CDF", overwrite = TRUE)
+# Tmin_RO_2023 = stack("maps/Tmin_RO_2023.nc")
+# 
+# Tmin_RO_stats <- suppressWarnings(lapply(names(stat_functions_Tmin), function(name) {
+#   fun_to_apply <- stat_functions_Tmin[[name]]
+#   stat_raster <- raster::calc(Tmin_RO_2023, fun=fun_to_apply, na.rm=TRUE)
+#   names(stat_raster) <- name
+#   return(stat_raster)
+# }))
+# # suppressing warnings since we have NAs for some data
+# fixing for sum = 0
+# Tmin_RO_stats$Tmin_sum[Tmin_RO_stats$Tmin_sum == 0] = NA 
+# 
+# 
+# Tmin_RO_stats <- raster::stack(Tmin_RO_stats)
+# Tmin_RO_stats <- rasterToPolygons(Tmin_RO_stats)
+# Tmin_RO_stats <- st_as_sf(Tmin_RO_stats)
+# Tmin_RO_stats <- st_transform(Tmin_RO_stats, st_crs(borders_RO))
+# Tmin_RO_stats <- st_intersection(Tmin_RO_stats, borders_RO)
+# 
+# saveRDS(Tmin_RO_stats, "maps/Tmin_RO_2023_stats.rds")
+Tmin_RO_stats = readRDS("maps/Tmin_RO_2023_stats.rds")
+
+
+plot_map_RO(Tmin_RO_stats, "Tmin_mean", 
+            map_legend_title = expression("Mean "*T["min"]*" ("^o*"C)"),
+            "Tmin_RO_mean")
+plot_map_RO(Tmin_RO_stats, "Tmin_median",
+            map_legend_title = expression("Median "*T["min"]*" ("^o*"C)"),
+            "Tmin_RO_median")
+plot_map_RO(Tmin_RO_stats, "Tmin_min",
+            map_legend_title = expression("Minimum "*T["min"]*" ("^o*"C)"),
+            "Tmin_RO_min")
+plot_map_RO(Tmin_RO_stats, "Tmin_max",
+            map_legend_title = expression("Maximum "*T["min"]*" ("^o*"C)"),
+            "Tmin_RO_max")
+plot_map_RO(Tmin_RO_stats, "Tmin_sd",
+            map_legend_title = expression("Standard deviation "*T["min"]*" ("^o*"C)"),
+            "Tmin_RO_sd")
+plot_map_RO(Tmin_RO_stats, "Tmin_var",
+            map_legend_title = expression("Variance "*T["min"]),
+            "Tmin_RO_var")
+plot_map_RO(Tmin_RO_stats, "Tmin_sum",
+            map_legend_title = expression("Sum "*T["min"]*" ("^o*"C)"),
+            "Tmin_RO_sum")
+plot_map_RO(Tmin_RO_stats, "Tmin_skew",
+            map_legend_title = expression("Skewness "*T["min"]),
+            "Tmin_RO_skew")
+plot_map_RO(Tmin_RO_stats, "Tmin_kurt",
+            map_legend_title = expression("Kurtosis "*T["min"]),
+            "Tmin_RO_kurt")
+
+
+
+data_cleanest$Tmin_mean = solar_irradiation_by_coordinates(coords_all,
+                                                           Tmin_RO_stats, variable_name = "Tmin_mean")
+data_cleanest$Tmin_median = solar_irradiation_by_coordinates(coords_all,
+                                                             Tmin_RO_stats, variable_name = "Tmin_median")
+data_cleanest$Tmin_min = solar_irradiation_by_coordinates(coords_all,
+                                                          Tmin_RO_stats, variable_name = "Tmin_min")
+data_cleanest$Tmin_max = solar_irradiation_by_coordinates(coords_all,
+                                                          Tmin_RO_stats, variable_name = "Tmin_max")
+data_cleanest$Tmin_sd = solar_irradiation_by_coordinates(coords_all,
+                                                         Tmin_RO_stats, variable_name = "Tmin_sd")
+data_cleanest$Tmin_var = solar_irradiation_by_coordinates(coords_all,
+                                                          Tmin_RO_stats, variable_name = "Tmin_var")
+data_cleanest$Tmin_sum = solar_irradiation_by_coordinates(coords_all,
+                                                          Tmin_RO_stats, variable_name = "Tmin_sum")
+data_cleanest$Tmin_skew = solar_irradiation_by_coordinates(coords_all,
+                                                           Tmin_RO_stats, variable_name = "Tmin_skew")
+data_cleanest$Tmin_kurt = solar_irradiation_by_coordinates(coords_all,
+                                                           Tmin_RO_stats, variable_name = "Tmin_kurt")
+
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmin_mean", expression("Mean "*T["min"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmin_median", expression("Median "*T["min"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmin_min", expression("Minimum "*T["min"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmin_max", expression("Maximum "*T["min"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmin_sd", expression("Standard deviation "*T["min"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmin_var", expression("Variance "*T["min"]))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmin_sum", expression("Sum "*T["min"]*" ("^o*"C)"))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmin_skew", expression("Skewness "*T["min"]))
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "Tmin_kurt", expression("Kurtosis "*T["min"]))
+
+
+model.Tmin = list()
+model.Tmin[[1]] = gam(PR_GHI ~ s(Tmin_mean), data = data_cleanest)
+model.Tmin[[2]] = gam(PR_GHI ~ s(Tmin_median), data = data_cleanest)
+model.Tmin[[3]] = gam(PR_GHI ~ s(Tmin_min), data = data_cleanest)
+model.Tmin[[4]] = gam(PR_GHI ~ s(Tmin_max), data = data_cleanest)
+model.Tmin[[5]] = gam(PR_GHI ~ s(Tmin_sd), data = data_cleanest)
+model.Tmin[[6]] = gam(PR_GHI ~ s(Tmin_var), data = data_cleanest)
+model.Tmin[[7]] = gam(PR_GHI ~ s(Tmin_sum), data = data_cleanest)
+model.Tmin[[8]] = gam(PR_GHI ~ s(Tmin_skew), data = data_cleanest)
+model.Tmin[[9]] = gam(PR_GHI ~ s(Tmin_kurt), data = data_cleanest)
+# Lets calculate p-values
+p_value.Tmin = 0
+p_value.Tmin[1] = anova(best_model.PR_GHI, model.Tmin[[1]])$"Pr(>F)"[2]
+p_value.Tmin[2] = anova(best_model.PR_GHI, model.Tmin[[2]])$"Pr(>F)"[2]
+p_value.Tmin[3] = anova(best_model.PR_GHI, model.Tmin[[3]])$"Pr(>F)"[2]
+p_value.Tmin[4] = anova(best_model.PR_GHI, model.Tmin[[4]])$"Pr(>F)"[2]
+p_value.Tmin[5] = anova(best_model.PR_GHI, model.Tmin[[5]])$"Pr(>F)"[2]
+p_value.Tmin[6] = anova(best_model.PR_GHI, model.Tmin[[6]])$"Pr(>F)"[2]
+p_value.Tmin[7] = anova(best_model.PR_GHI, model.Tmin[[7]])$"Pr(>F)"[2]
+p_value.Tmin[8] = anova(best_model.PR_GHI, model.Tmin[[8]])$"Pr(>F)"[2]
+p_value.Tmin[9] = anova(best_model.PR_GHI, model.Tmin[[9]])$"Pr(>F)"[2]
+# Since we are performing several test, our calculated p-value is inflated
+# We need to correct this p-value. We will use the False Discovery Rate 
+# which is not as strict as other methodologies (e.g., Bonferroni correction)
+# Note: on reality, we should correct the p-value of all tests. That would result
+# in a larger p-value. Since we are just exploring, what we are doing is enough
+adjusted_p_values.Tmin = p.adjust(p_value.Tmin, method = "BH")
+# 0.5926064 0.5926064 0.5926064 0.7832714 0.7832714 0.7832714 0.5926064 0.5926064 0.5926064
+# After adjusting p-values, we see that we do not have anything that is statistically significant
+
+# Lets also take a look on AIC
+AIC_statistical_models.Tmin = c(AIC(best_model.PR_GHI), sapply(model.Tmin, AIC))
+# -301.1569 -300.6009 -299.8940 -299.9587 -299.2339 -299.3017 -299.3256 -300.6009 -299.9203 -300.5854
+# best model is still the previous model
+name_predictors_Tmin = c("Null model", expression("Mean" ~ T["min"]), 
+                         expression("Median" ~ T["min"]),
+                         expression("Minimum" ~ T["min"]), expression("Maximum" ~ T["min"]),
+                         expression("SD" ~ T["min"]),
+                         expression("Variance" ~ T["min"]), expression("Sum" ~ T["min"]),
+                         expression("Skewness" ~ T["min"]), expression("Kurtosis" ~ T["min"]))
+plot_p_values_and_AIC(c(NA, adjusted_p_values.Tmin), AIC_statistical_models.Tmin,
+                      name_predictors_Tmin, "Tmin_RO_p_values")
+
+
+
+
+
+
+
+
+
+
+########################### Precipitation
+# stat_functions_prec = list(
+#   prec_mean = mean,
+#   prec_median = median,
+#   prec_min = min,
+#   prec_max = max,
+#   prec_sd = sd,
+#   prec_var = var,
+#   prec_sum = sum,
+#   prec_skew = moments::skewness,
+#   prec_kurt = moments::kurtosis
+# )
+# prec_BR = stack("/home/milaneng0013/Downloads/pr_20010101_20240320_BR-DWGD_UFES_UTEXAS_v_3.2.3.nc")
+# 
+# layer_start_2023 <- 8036
+# layer_end_2023 <- 8400
+# prec_BR_2023 <- prec_BR[[layer_start_2023:layer_end_2023]]
+# 
+# prec_borders_RO_projected <- st_transform(borders_RO, crs(prec_BR_2023))
+# prec_borders_RO_sp <- as(prec_borders_RO_projected, "Spatial")
+# 
+# # first we crop a retangular box, then we adjust it
+# prec_RO_2023 = crop(prec_BR_2023, prec_borders_RO_sp)
+# prec_RO_2023 <- mask(prec_RO_2023, prec_borders_RO_sp)
+# 
+# # lets save it
+# writeRaster(prec_RO_2023, filename = "maps/prec_RO_2023.nc", format = "CDF", overwrite = TRUE)
+# prec_RO_2023 = stack("maps/prec_RO_2023.nc")
+# 
+# prec_RO_stats <- lapply(names(stat_functions_prec), function(name) {
+#   fun_to_apply <- stat_functions_prec[[name]]
+#   stat_raster <- raster::calc(prec_RO_2023, fun=fun_to_apply, na.rm=TRUE)
+#   names(stat_raster) <- name
+#   return(stat_raster)
+# })
+# # fixing for sum = 0
+# prec_RO_stats$prec_sum[prec_RO_stats$prec_sum == 0] = NA 
+# 
+# prec_RO_stats <- raster::stack(prec_RO_stats)
+# prec_RO_stats <- rasterToPolygons(prec_RO_stats)
+# prec_RO_stats <- st_as_sf(prec_RO_stats)
+# prec_RO_stats <- st_transform(prec_RO_stats, st_crs(borders_RO))
+# prec_RO_stats <- st_intersection(prec_RO_stats, borders_RO)
+# 
+# saveRDS(prec_RO_stats, "maps/prec_RO_2023_stats.rds")
+prec_RO_stats = readRDS("maps/prec_RO_2023_stats.rds")
+
+plot_map_RO(prec_RO_stats, "prec_mean", 
+            map_legend_title = "Mean precipitation (mm)",
+            "prec_RO_mean")
+plot_map_RO(prec_RO_stats, "prec_median",
+            map_legend_title = "Median precipitation (mm)",
+            "prec_RO_median")
+plot_map_RO(prec_RO_stats, "prec_min",
+            map_legend_title = "Minimum precipitation (mm)",
+            "prec_RO_min")
+plot_map_RO(prec_RO_stats, "prec_max",
+            map_legend_title = "Maximum precipitation (mm)",
+            "prec_RO_max")
+plot_map_RO(prec_RO_stats, "prec_sd",
+            map_legend_title = "Standard deviation precipitation (mm)",
+            "prec_RO_sd")
+plot_map_RO(prec_RO_stats, "prec_var",
+            map_legend_title = "Variance precipitation",
+            "prec_RO_var")
+plot_map_RO(prec_RO_stats, "prec_sum",
+            map_legend_title = "Sum precipitation (mm)",
+            "prec_RO_sum")
+plot_map_RO(prec_RO_stats, "prec_skew",
+            map_legend_title = "Skewness precipitation",
+            "prec_RO_skew")
+plot_map_RO(prec_RO_stats, "prec_kurt",
+            map_legend_title = "Kurtosis precipitation",
+            "prec_RO_kurt")
+
+
+data_cleanest$prec_mean = solar_irradiation_by_coordinates(coords_all,
+                                                           prec_RO_stats, variable_name = "prec_mean")
+data_cleanest$prec_median = solar_irradiation_by_coordinates(coords_all,
+                                                             prec_RO_stats, variable_name = "prec_median")
+data_cleanest$prec_min = solar_irradiation_by_coordinates(coords_all,
+                                                          prec_RO_stats, variable_name = "prec_min")
+data_cleanest$prec_max = solar_irradiation_by_coordinates(coords_all,
+                                                          prec_RO_stats, variable_name = "prec_max")
+data_cleanest$prec_sd = solar_irradiation_by_coordinates(coords_all,
+                                                         prec_RO_stats, variable_name = "prec_sd")
+data_cleanest$prec_var = solar_irradiation_by_coordinates(coords_all,
+                                                          prec_RO_stats, variable_name = "prec_var")
+data_cleanest$prec_sum = solar_irradiation_by_coordinates(coords_all,
+                                                          prec_RO_stats, variable_name = "prec_sum")
+data_cleanest$prec_skew = solar_irradiation_by_coordinates(coords_all,
+                                                           prec_RO_stats, variable_name = "prec_skew")
+data_cleanest$prec_kurt = solar_irradiation_by_coordinates(coords_all,
+                                                           prec_RO_stats, variable_name = "prec_kurt")
+
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "prec_mean", "Mean precipitation (mm)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "prec_median", "Median precipitation (mm)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "prec_min", "Minimum precipitation (mm)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "prec_max", "Maximum precipitation (mm)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "prec_sd", "Standard deviation precipitation (mm)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "prec_var", "Variance precipitation")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "prec_sum", "Sum precipitation (mm)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "prec_skew", "Skewness precipitation")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "prec_kurt", "Kurtosis precipitation")
+
+
+model.prec = list()
+model.prec[[1]] = gam(PR_GHI ~ s(prec_mean), data = data_cleanest)
+model.prec[[2]] = gam(PR_GHI ~ s(prec_median), data = data_cleanest)
+# model.prec[[3]] = gam(PR_GHI ~ s(prec_min), data = data_cleanest) # all zeros
+model.prec[[4]] = gam(PR_GHI ~ s(prec_max), data = data_cleanest)
+model.prec[[5]] = gam(PR_GHI ~ s(prec_sd), data = data_cleanest)
+model.prec[[6]] = gam(PR_GHI ~ s(prec_var), data = data_cleanest)
+model.prec[[7]] = gam(PR_GHI ~ s(prec_sum), data = data_cleanest)
+model.prec[[8]] = gam(PR_GHI ~ s(prec_skew), data = data_cleanest)
+model.prec[[9]] = gam(PR_GHI ~ s(prec_kurt), data = data_cleanest)
+# Lets calculate p-values
+p_value.prec = 0
+p_value.prec[1] = anova(best_model.PR_GHI, model.prec[[1]])$"Pr(>F)"[2]
+p_value.prec[2] = anova(best_model.PR_GHI, model.prec[[2]])$"Pr(>F)"[2]
+# p_value.prec[3] = anova(best_model.PR_GHI, model.prec[[3]])$"Pr(>F)"[2]
+p_value.prec[4] = anova(best_model.PR_GHI, model.prec[[4]])$"Pr(>F)"[2]
+p_value.prec[5] = anova(best_model.PR_GHI, model.prec[[5]])$"Pr(>F)"[2]
+p_value.prec[6] = anova(best_model.PR_GHI, model.prec[[6]])$"Pr(>F)"[2]
+p_value.prec[7] = anova(best_model.PR_GHI, model.prec[[7]])$"Pr(>F)"[2]
+p_value.prec[8] = anova(best_model.PR_GHI, model.prec[[8]])$"Pr(>F)"[2]
+p_value.prec[9] = anova(best_model.PR_GHI, model.prec[[9]])$"Pr(>F)"[2]
+# Since we are performing several test, our calculated p-value is inflated
+# We need to correct this p-value. We will use the False Discovery Rate 
+# which is not as strict as other methodologies (e.g., Bonferroni correction)
+# Note: on reality, we should correct the p-value of all tests. That would result
+# in a larger p-value. Since we are just exploring, what we are doing is enough
+adjusted_p_values.prec = p.adjust(p_value.prec, method = "BH")
+# 0.4851536 0.4851536        NA 0.5401944 0.4851536 0.4851536 0.4851536 0.4851536 0.4851536
+# After adjusting p-values, we see that we do not have anything that is statistically significant
+
+# Lets also take a look on AIC
+AIC_statistical_models.prec = c(AIC(best_model.PR_GHI), AIC(model.prec[[1]]), AIC(model.prec[[2]]),
+                                NA, AIC(model.prec[[4]]), AIC(model.prec[[5]]), AIC(model.prec[[6]]),
+                                AIC(model.prec[[7]]), AIC(model.prec[[8]]), AIC(model.prec[[9]]))
+# -301.1569 -300.0381 -300.0067        NA -299.5388 -299.8088 -299.8061 -300.0381 -300.0127 -299.9173
+# best model is still the previous model
+name_predictors_prec = c("Null model", "Mean prec", 
+                         "Median prec", "Minimum prec", 
+                         "Maximum prec", "SD prec",
+                         "Variance prec", "Sum prec",
+                         "Skewness prec", "Kurtosis prec")
+plot_p_values_and_AIC(c(NA, adjusted_p_values.prec), AIC_statistical_models.prec,
+                      name_predictors_prec, "prec_RO_p_values")
+
+
+
+
+
+
+
+
+
+
+
+
+########################### RH
+# stat_functions_RH = list(
+#   RH_mean = mean,
+#   RH_median = median,
+#   RH_min = min,
+#   RH_max = max,
+#   RH_sd = sd,
+#   RH_var = var,
+#   RH_sum = sum,
+#   RH_skew = moments::skewness,
+#   RH_kurt = moments::kurtosis
+# )
+# RH_BR = stack("/path/to/RH_20010101_20240320_BR-DWGD_UFES_UTEXAS_v_3.2.3.nc")
+# 
+# layer_start_2023 <- 8036
+# layer_end_2023 <- 8400
+# RH_BR_2023 <- RH_BR[[layer_start_2023:layer_end_2023]]
+# 
+# RH_borders_RO_projected <- st_transform(borders_RO, crs(RH_BR_2023))
+# RH_borders_RO_sp <- as(RH_borders_RO_projected, "Spatial")
+# 
+# # first we crop a retangular box, then we adjust it
+# RH_RO_2023 = crop(RH_BR_2023, RH_borders_RO_sp)
+# RH_RO_2023 <- mask(RH_RO_2023, RH_borders_RO_sp)
+# 
+# # lets save it
+# writeRaster(RH_RO_2023, filename = "maps/RH_RO_2023.nc", format = "CDF", overwrite = TRUE)
+# RH_RO_2023 = stack("maps/RH_RO_2023.nc")
+# 
+# RH_RO_stats <- suppressWarnings(lapply(names(stat_functions_RH), function(name) {
+#   fun_to_apply <- stat_functions_RH[[name]]
+#   stat_raster <- raster::calc(RH_RO_2023, fun=fun_to_apply, na.rm=TRUE)
+#   names(stat_raster) <- name
+#   return(stat_raster)
+# }))
+# # suppressing warnings since we have NAs for some data
+# fixing for sum = 0
+# RH_RO_stats$RH_sum[RH_RO_stats$RH_sum == 0] = NA 
+# 
+# RH_RO_stats <- raster::stack(RH_RO_stats)
+# RH_RO_stats <- rasterToPolygons(RH_RO_stats)
+# RH_RO_stats <- st_as_sf(RH_RO_stats)
+# RH_RO_stats <- st_transform(RH_RO_stats, st_crs(borders_RO))
+# RH_RO_stats <- st_intersection(RH_RO_stats, borders_RO)
+# 
+# saveRDS(RH_RO_stats, "maps/RH_RO_2023_stats.rds")
+RH_RO_stats = readRDS("maps/RH_RO_2023_stats.rds")
+
+plot_map_RO(RH_RO_stats, "RH_mean", 
+            map_legend_title = "Mean relative humidity (%)",
+            "RH_RO_mean")
+plot_map_RO(RH_RO_stats, "RH_median",
+            map_legend_title = "Median relative humidity (%)",
+            "RH_RO_median")
+plot_map_RO(RH_RO_stats, "RH_min",
+            map_legend_title = "Minimum relative humidity (%)",
+            "RH_RO_min")
+plot_map_RO(RH_RO_stats, "RH_max",
+            map_legend_title = "Maximum relative humidity (%)",
+            "RH_RO_max")
+plot_map_RO(RH_RO_stats, "RH_sd",
+            map_legend_title = "Standard deviation relative humidity (%)",
+            "RH_RO_sd")
+plot_map_RO(RH_RO_stats, "RH_var",
+            map_legend_title = "Variance relative humidity",
+            "RH_RO_var")
+plot_map_RO(RH_RO_stats, "RH_sum",
+            map_legend_title = "Sum relative humidity (%)",
+            "RH_RO_sum")
+plot_map_RO(RH_RO_stats, "RH_skew",
+            map_legend_title = "Skewness relative humidity",
+            "RH_RO_skew")
+plot_map_RO(RH_RO_stats, "RH_kurt",
+            map_legend_title = "Kurtosis relative humidity",
+            "RH_RO_kurt")
+
+
+data_cleanest$RH_mean = solar_irradiation_by_coordinates(coords_all,
+                                                         RH_RO_stats, variable_name = "RH_mean")
+data_cleanest$RH_median = solar_irradiation_by_coordinates(coords_all,
+                                                           RH_RO_stats, variable_name = "RH_median")
+data_cleanest$RH_min = solar_irradiation_by_coordinates(coords_all,
+                                                        RH_RO_stats, variable_name = "RH_min")
+data_cleanest$RH_max = solar_irradiation_by_coordinates(coords_all,
+                                                        RH_RO_stats, variable_name = "RH_max")
+data_cleanest$RH_sd = solar_irradiation_by_coordinates(coords_all,
+                                                       RH_RO_stats, variable_name = "RH_sd")
+data_cleanest$RH_var = solar_irradiation_by_coordinates(coords_all,
+                                                        RH_RO_stats, variable_name = "RH_var")
+data_cleanest$RH_sum = solar_irradiation_by_coordinates(coords_all,
+                                                        RH_RO_stats, variable_name = "RH_sum")
+data_cleanest$RH_skew = solar_irradiation_by_coordinates(coords_all,
+                                                         RH_RO_stats, variable_name = "RH_skew")
+data_cleanest$RH_kurt = solar_irradiation_by_coordinates(coords_all,
+                                                         RH_RO_stats, variable_name = "RH_kurt")
+
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "RH_mean", "Mean relative humidity (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "RH_median", "Median relative humidity (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "RH_min", "Minimum relative humidity (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "RH_max", "Maximum relative humidity (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "RH_sd", "Standard deviation relative humidity (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "RH_var", "Variance relative humidity")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "RH_sum", "Sum relative humidity (%)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "RH_skew", "Skewness relative humidity")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "RH_kurt", "Kurtosis relative humidity")
+
+
+model.RH = list()
+model.RH[[1]] = gam(PR_GHI ~ s(RH_mean), data = data_cleanest)
+model.RH[[2]] = gam(PR_GHI ~ s(RH_median), data = data_cleanest)
+model.RH[[3]] = gam(PR_GHI ~ s(RH_min), data = data_cleanest)
+model.RH[[4]] = gam(PR_GHI ~ s(RH_max, k = 6), data = data_cleanest)
+model.RH[[5]] = gam(PR_GHI ~ s(RH_sd), data = data_cleanest)
+model.RH[[6]] = gam(PR_GHI ~ s(RH_var), data = data_cleanest)
+model.RH[[7]] = gam(PR_GHI ~ s(RH_sum), data = data_cleanest)
+model.RH[[8]] = gam(PR_GHI ~ s(RH_skew), data = data_cleanest)
+model.RH[[9]] = gam(PR_GHI ~ s(RH_kurt), data = data_cleanest)
+# Lets calculate p-values
+p_value.RH = 0
+p_value.RH[1] = anova(best_model.PR_GHI, model.RH[[1]])$"Pr(>F)"[2]
+p_value.RH[2] = anova(best_model.PR_GHI, model.RH[[2]])$"Pr(>F)"[2]
+p_value.RH[3] = anova(best_model.PR_GHI, model.RH[[3]])$"Pr(>F)"[2]
+p_value.RH[4] = anova(best_model.PR_GHI, model.RH[[4]])$"Pr(>F)"[2]
+p_value.RH[5] = anova(best_model.PR_GHI, model.RH[[5]])$"Pr(>F)"[2]
+p_value.RH[6] = anova(best_model.PR_GHI, model.RH[[6]])$"Pr(>F)"[2]
+p_value.RH[7] = anova(best_model.PR_GHI, model.RH[[7]])$"Pr(>F)"[2]
+p_value.RH[8] = anova(best_model.PR_GHI, model.RH[[8]])$"Pr(>F)"[2]
+p_value.RH[9] = anova(best_model.PR_GHI, model.RH[[9]])$"Pr(>F)"[2]
+# Since we are performing several test, our calculated p-value is inflated
+# We need to correct this p-value. We will use the False Discovery Rate 
+# which is not as strict as other methodologies (e.g., Bonferroni correction)
+# Note: on reality, we should correct the p-value of all tests. That would result
+# in a larger p-value. Since we are just exploring, what we are doing is enough
+adjusted_p_values.RH = p.adjust(p_value.RH, method = "BH")
+# 0.5777906 0.5777906 0.5777906 0.5777906 0.5777906 0.5777906 0.5777906 0.5777906 0.5777906
+# After adjusting p-values, we see that we do not have anything that is statistically significant
+
+# Lets also take a look on AIC
+AIC_statistical_models.RH = c(AIC(best_model.PR_GHI), sapply(model.RH, AIC))
+# -301.1569 -300.1440 -300.0966 -299.4691 -299.8432 -299.4935 -299.5007 -300.1440 -299.4722 -299.8534
+# best model is still the previous model
+name_predictors_RH = c("Null model", "Mean RH", 
+                       "Median RH", "Minimum RH", 
+                       "Maximum RH", "SD RH",
+                       "Variance RH", "Sum RH",
+                       "Skewness RH", "Kurtosis RH")
+plot_p_values_and_AIC(c(NA, adjusted_p_values.RH), AIC_statistical_models.RH,
+                      name_predictors_RH, "RH_RO_p_values")
+
+
+
+
+
+
+
+
+
+########################### WS
+# stat_functions_WS = list(
+#   WS_mean = mean,
+#   WS_median = median,
+#   WS_min = min,
+#   WS_max = max,
+#   WS_sd = sd,
+#   WS_var = var,
+#   WS_sum = sum,
+#   WS_skew = moments::skewness,
+#   WS_kurt = moments::kurtosis
+# )
+# WS_BR = stack("/path/to/u2_20010101_20240320_BR-DWGD_UFES_UTEXAS_v_3.2.3.nc")
+# 
+# layer_start_2023 <- 8036
+# layer_end_2023 <- 8400
+# WS_BR_2023 <- WS_BR[[layer_start_2023:layer_end_2023]]
+# 
+# WS_borders_RO_projected <- st_transform(borders_RO, crs(WS_BR_2023))
+# WS_borders_RO_sp <- as(WS_borders_RO_projected, "Spatial")
+# 
+# # first we crop a retangular box, then we adjust it
+# WS_RO_2023 = crop(WS_BR_2023, WS_borders_RO_sp)
+# WS_RO_2023 <- mask(WS_RO_2023, WS_borders_RO_sp)
+# 
+# # lets save it
+# writeRaster(WS_RO_2023, filename = "maps/WS_RO_2023.nc", format = "CDF", overwrite = TRUE)
+# WS_RO_2023 = stack("maps/WS_RO_2023.nc")
+# 
+# WS_RO_stats <- suppressWarnings(lapply(names(stat_functions_WS), function(name) {
+#   fun_to_apply <- stat_functions_WS[[name]]
+#   stat_raster <- raster::calc(WS_RO_2023, fun=fun_to_apply, na.rm=TRUE)
+#   names(stat_raster) <- name
+#   return(stat_raster)
+# }))
+# # suppressing warnings
+# fixing for sum = 0
+# WS_RO_stats$WS_sum[WS_RO_stats$WS_sum == 0] = NA 
+# 
+# 
+# WS_RO_stats <- raster::stack(WS_RO_stats)
+# WS_RO_stats <- rasterToPolygons(WS_RO_stats)
+# WS_RO_stats <- st_as_sf(WS_RO_stats)
+# WS_RO_stats <- st_transform(WS_RO_stats, st_crs(borders_RO))
+# WS_RO_stats <- st_intersection(WS_RO_stats, borders_RO)
+# 
+# saveRDS(WS_RO_stats, "maps/WS_RO_2023_stats.rds")
+WS_RO_stats = readRDS("maps/WS_RO_2023_stats.rds")
+
+plot_map_RO(WS_RO_stats, "WS_mean", 
+            map_legend_title = "Mean wind speed (m/s)",
+            "WS_RO_mean")
+plot_map_RO(WS_RO_stats, "WS_median",
+            map_legend_title = "Median wind speed (m/s)",
+            "WS_RO_median")
+plot_map_RO(WS_RO_stats, "WS_min",
+            map_legend_title = "Minimum wind speed (m/s)",
+            "WS_RO_min")
+plot_map_RO(WS_RO_stats, "WS_max",
+            map_legend_title = "Maximum wind speed (m/s)",
+            "WS_RO_max")
+plot_map_RO(WS_RO_stats, "WS_sd",
+            map_legend_title = "Standard deviation wind speed (m/s)",
+            "WS_RO_sd")
+plot_map_RO(WS_RO_stats, "WS_var",
+            map_legend_title = "Variance wind speed",
+            "WS_RO_var")
+plot_map_RO(WS_RO_stats, "WS_sum",
+            map_legend_title = "Sum wind speed (m/s)",
+            "WS_RO_sum")
+plot_map_RO(WS_RO_stats, "WS_skew",
+            map_legend_title = "Skewness wind speed",
+            "WS_RO_skew")
+plot_map_RO(WS_RO_stats, "WS_kurt",
+            map_legend_title = "Kurtosis wind speed",
+            "WS_RO_kurt")
+
+
+
+data_cleanest$WS_mean = solar_irradiation_by_coordinates(coords_all,
+                                                         WS_RO_stats, variable_name = "WS_mean")
+data_cleanest$WS_median = solar_irradiation_by_coordinates(coords_all,
+                                                           WS_RO_stats, variable_name = "WS_median")
+data_cleanest$WS_min = solar_irradiation_by_coordinates(coords_all,
+                                                        WS_RO_stats, variable_name = "WS_min")
+data_cleanest$WS_max = solar_irradiation_by_coordinates(coords_all,
+                                                        WS_RO_stats, variable_name = "WS_max")
+data_cleanest$WS_sd = solar_irradiation_by_coordinates(coords_all,
+                                                       WS_RO_stats, variable_name = "WS_sd")
+data_cleanest$WS_var = solar_irradiation_by_coordinates(coords_all,
+                                                        WS_RO_stats, variable_name = "WS_var")
+data_cleanest$WS_sum = solar_irradiation_by_coordinates(coords_all,
+                                                        WS_RO_stats, variable_name = "WS_sum")
+data_cleanest$WS_skew = solar_irradiation_by_coordinates(coords_all,
+                                                         WS_RO_stats, variable_name = "WS_skew")
+data_cleanest$WS_kurt = solar_irradiation_by_coordinates(coords_all,
+                                                         WS_RO_stats, variable_name = "WS_kurt")
+
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "WS_mean", "Mean wind speed (m/s)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "WS_median", "Median wind speed (m/s)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "WS_min", "Minimum wind speed (m/s)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "WS_max", "Maximum wind speed (m/s)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "WS_sd", "Standard deviation wind speed (m/s)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "WS_var", "Variance wind speed")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "WS_sum", "Sum wind speed (m/s)")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "WS_skew", "Skewness wind speed")
+plot_scaterplot_points_Yf_PRGHI_CUF(data_cleanest, "WS_kurt", "Kurtosis wind speed")
+
+
+model.WS = list()
+model.WS[[1]] = gam(PR_GHI ~ s(WS_mean), data = data_cleanest)
+model.WS[[2]] = gam(PR_GHI ~ s(WS_median, k = 5), data = data_cleanest)
+model.WS[[3]] = gam(PR_GHI ~ s(WS_min, k = 3), data = data_cleanest)
+model.WS[[4]] = gam(PR_GHI ~ s(WS_max, k = 7), data = data_cleanest)
+model.WS[[5]] = gam(PR_GHI ~ s(WS_sd), data = data_cleanest)
+model.WS[[6]] = gam(PR_GHI ~ s(WS_var), data = data_cleanest)
+model.WS[[7]] = gam(PR_GHI ~ s(WS_sum), data = data_cleanest)
+model.WS[[8]] = gam(PR_GHI ~ s(WS_skew), data = data_cleanest)
+model.WS[[9]] = gam(PR_GHI ~ s(WS_kurt), data = data_cleanest)
+# Lets calculate p-values
+p_value.WS = 0
+p_value.WS[1] = anova(best_model.PR_GHI, model.WS[[1]])$"Pr(>F)"[2]
+p_value.WS[2] = anova(best_model.PR_GHI, model.WS[[2]])$"Pr(>F)"[2]
+p_value.WS[3] = anova(best_model.PR_GHI, model.WS[[3]])$"Pr(>F)"[2]
+p_value.WS[4] = anova(best_model.PR_GHI, model.WS[[4]])$"Pr(>F)"[2]
+p_value.WS[5] = anova(best_model.PR_GHI, model.WS[[5]])$"Pr(>F)"[2]
+p_value.WS[6] = anova(best_model.PR_GHI, model.WS[[6]])$"Pr(>F)"[2]
+p_value.WS[7] = anova(best_model.PR_GHI, model.WS[[7]])$"Pr(>F)"[2]
+p_value.WS[8] = anova(best_model.PR_GHI, model.WS[[8]])$"Pr(>F)"[2]
+p_value.WS[9] = anova(best_model.PR_GHI, model.WS[[9]])$"Pr(>F)"[2]
+# Since we are performing several test, our calculated p-value is inflated
+# We need to correct this p-value. We will use the False Discovery Rate 
+# which is not as strict as other methodologies (e.g., Bonferroni correction)
+# Note: on reality, we should correct the p-value of all tests. That would result
+# in a larger p-value. Since we are just exploring, what we are doing is enough
+adjusted_p_values.WS = p.adjust(p_value.WS, method = "BH")
+# 0.486025 0.486025 0.486025 0.486025 0.486025 0.486025 0.486025 0.486025 0.486025
+# After adjusting p-values, we see that we do not have anything that is statistically significant
+
+# Lets also take a look on AIC
+AIC_statistical_models.WS = c(AIC(best_model.PR_GHI), sapply(model.WS, AIC))
+# -301.1569 -299.8295 -299.6498 -302.1608 -299.5889 -299.6243 -299.3083 -299.8295 -300.2296 -299.8119
+# We could say that maybe WS_max has an effect, because it has lower AIC. Lets investiage
+summary(model.WS[[4]]) # nothing really statistically significant
+plot(model.WS[[4]]) # WS_max plot includes zero
+gam.check(model.WS[[4]])
+# lets fit again considering a line
+model.WS.4 = gam(PR_GHI ~ WS_max, data = data_cleanest)
+summary(model.WS.4) # nothing is significant anymore
+# not great
+# best model is still the previous model
+name_predictors_WS = c("Null model", 
+                       "Median WS", "Minimum WS", 
+                       "Maximum WS", "SD WS",
+                       "Variance WS", "Sum WS",
+                       "Skewness WS", "Kurtosis WS")
+plot_p_values_and_AIC(c(NA, adjusted_p_values.WS), AIC_statistical_models.WS,
+                      name_predictors_WS, "WS_RO_p_values")
+
+# saving the dataset with all datapoints
+write_csv(data_cleanest, "data_cleanest.csv")
+```
+
+
+```{r}
+# lets take another look in our dataset
+# lets look at correlation
+data_numeric <- data_cleanest %>%
+  dplyr::select(where(is.numeric)) %>%
+  na.omit() 
+# removing near zero correlations
+zero_sd_cols <- sapply(data_numeric, sd) %>% 
+  { is.na(.) | . < 1e-6 } %>% 
+  which() %>% 
+  names()
+
+
+
+if (length(zero_sd_cols) > 0) {
+  message(paste("Removing near zero standard deviation columns:", paste(zero_sd_cols, collapse = ", ")))
+  data_numeric <- data_numeric %>% 
+    dplyr::select(-all_of(zero_sd_cols))
+} else {
+  data_numeric <- data_numeric
+}
+
+# removing final_yield_estimated
+data_numeric <- data_numeric %>% 
+  dplyr::select(-final_yield_estimated)
+
+names_data_numeric = c(
+  "plain('PV mod power')", "plain('PV mod qnt')", "plain('PV inv power')", "plain('PV inv qnt')",
+  "plain('Yearly kWh')", "plain('PV inv tot power')", "plain('DC kWp')", "plain('ISF')", 
+  "plain('Temp Coeff ') * I[sc]", "plain('Temp Coeff ') * V[oc]", "plain('Temp Coeff ') * P[max]",
+  "plain('PV mod eff')", "plain('PV inv max eff')", "plain('PV inv Eur eff')",
+  "plain('PV inv #MPPTs')", "plain('PV inv #DC inputs')", "plain('#DC inputs/#MPPTs')",
+  "plain('Latitude')", "plain('Longitude')","plain('Diffuse')", "plain('Direct normal')", 
+  "plain('Global horizontal')", "plain('Tilted latitude')", "plain('Final yield')", 
+  "plain('Hours peak sun')", "PR[GHI]", "plain('CUF')", 
+  "plain('Total #MPPTs')", "plain('Total #DC inputs')",
+  
+  ## Tmax
+  "plain('Mean ') * T[max]", "plain('Median ') * T[max]", "plain('Minimum ') * T[max]",
+  "plain('Maximum ') * T[max]", "plain('SD ') * T[max]", "plain('Variance ') * T[max]",
+  "plain('Sum ') * T[max]", "plain('Skewness ') * T[max]", "plain('Kurtosis ') * T[max]",
+  
+  ## Tmin
+  "plain('Mean ') * T[min]", "plain('Median ') * T[min]", "plain('Minimum ') * T[min]",
+  "plain('Maximum ') * T[min]", "plain('SD ') * T[min]", "plain('Variance ') * T[min]",
+  "plain('Sum ') * T[min]", "plain('Skewness') * T[min]", "plain('Kurtosis') * T[min]",
+  
+  ## Precipitation
+  "plain('Mean prec')", "plain('Median prec')",
+  "plain('Maximum prec')", "plain('SD prec')", "plain('Variance prec')",
+  "plain('Sum prec')", "plain('Skewness prec')", "plain('Kurtosis prec')",
+  
+  ## Relative humidity
+  "plain('Mean RH')", "plain('Median RH')", "plain('Minimum RH')",
+  "plain('Maximum RH')", "plain('SD RH')", "plain('Variance RH')",
+  "plain('Sum RH')", "plain('Skewness RH')", "plain('Kurtosis RH')",
+  
+  ## Wind speed
+  "plain('Mean WS')", "plain('Median WS')", "plain('Minimum WS')",
+  "plain('Maximum WS')", "plain('SD WS')", "plain('Variance WS')",
+  "plain('Sum WS')", "plain('Skewness WS')", "plain('Kurtosis WS')"
+)
+
+plot_correlation = function (data_numeric.input, variable_to_calculate, 
+                             name_of_variable = "", name_to_save = "",
+                             corr.method = "pearson", number_to_remove = 1) {
+  if (name_to_save == "") {
+    show_not_save = TRUE
+  } else {
+    show_not_save = FALSE
+    png(filename = paste0("plots/",name_to_save, ".png"), width = 366, height = 1100, units = "px")
+  }
+  cor_matrix <- cor(data_numeric.input, method = corr.method)
+  variable_to_plot = cor_matrix[,variable_to_calculate]
+  
+  names(variable_to_plot) = names_data_numeric
+  
+  variable_to_plot <- variable_to_plot %>%
+    sort(decreasing = TRUE)
+  # removing correlation with itself
+  variable_to_plot = variable_to_plot[(1 + number_to_remove):length(variable_to_plot)]
+  
+  # data conversion to use ggplot
+  cor_df_long <- data.frame(
+    Variable = names(variable_to_plot),
+    Correlation = variable_to_plot
+  )
+  
+  if (corr.method == "pearson") {
+    corelation_name = "correlation (r)"
+  } else if (corr.method == "spearman") {
+    corelation_name = "association (ρ)"
+  } else if (corr.method == "kendall") {
+    corelation_name = "association ($\tau$)"
+  }
+  
+  plot_of_correlations = ggplot(cor_df_long, aes(x = reorder(Variable, Correlation), y = Correlation)) +
+    geom_col(aes(fill = Correlation), width = 0.8, color = "black", linewidth = 0.1) + 
+    
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    
+    scale_fill_gradient2(low = "darkred", mid = "white", high = "darkblue", 
+                         midpoint = 0, limit = c(-1, 1),
+                         name = paste(name_of_variable,corelation_name)) +
+    
+    guides(fill = guide_colorbar(
+      title.position = "top", 
+      barwidth = unit(0.7, "npc"),
+      barheight = 1.5,
+    )) +
+    
+    labs(x = NULL, y = NULL) +
+    
+    coord_flip() +
+    
+    scale_x_discrete(labels = scales::parse_format()) +
+    
+    theme_minimal() +
+    theme(
+      legend.position = "bottom", 
+      legend.title = element_text(size = 14, hjust = 0.5),
+      legend.box.margin = margin(t = -10, r = 0, b = 0, l = -75, unit = "pt"),
+      
+      axis.title = element_blank(),
+      axis.text.y = element_text(size = 14),
+      axis.text.x = element_text(angle = 90, hjust = 1, size = 14),
+      
+      plot.title = element_text(size = 14)
+    )
+  
+  print(plot_of_correlations)
+  if (!show_not_save) {
+    dev.off()
+  }
+}
+
+plot_correlation(data_numeric, "PR_GHI", "Performance ratio at GHI", "PR_GHI_corr", "spearman")
+plot_correlation(data_numeric, "global_horizontal", "Global horizontal irradiance", "GHI_corr", "spearman")
+plot_correlation(data_numeric, "final_yield", "Final yield", "final_yield_corr", "spearman")
+plot_correlation(data_numeric, "CUF", "Capacity utilization factor", "CUF_corr", "spearman")
+# note that correlation with CUF/ISF will be the same as correlation with final yield
+```
+
+
+
+
+```{r}
+############ What is our statistical power?
+# So, we found nothing. Could it be that we did not have enought statistical power? What is the smallest effect we could have detected?
+n.pwr = 142
+k.pwr = 1
+v_denom.pwr = n.pwr - k.pwr - 1
+alpha.pwr = 0.05
+power.pwr = 0.8
+
+sensitivity_analysis <- pwr.f2.test(
+  u = k.pwr,
+  v = v_denom.pwr,
+  f2 = NULL,  # Set to NULL to solve for effect size
+  sig.level = alpha.pwr,
+  power = power.pwr
+)
+
+print(sensitivity_analysis)
+R2.pwr = sensitivity_analysis$f2/(1+sensitivity_analysis$f2)
+
+range.95.PI = PR_GUI_boot_all_percentile_and_quantiles[11] - PR_GUI_boot_all_percentile_and_quantiles[10]
+reduction_in_uncertainty = 1 - sqrt(1 - R2.pwr)
+could.explain.at.least = range.95.PI*reduction_in_uncertainty
+
+######### now we will calculate what n we would need to detect any significant change on PRGHI
+could.explain.at.least_to_calculate_n = 0.1*0.3
+reduction_in_uncertainty_to_calculate_n = could.explain.at.least_to_calculate_n/range.95.PI
+R2.pwr_to_calculate_n = 1 - (1 - reduction_in_uncertainty_to_calculate_n)^2
+f2_to_calculate_n = R2.pwr_to_calculate_n/(1-R2.pwr_to_calculate_n)
+
+
+sensitivity_analysis_to_calculate_n <- pwr.f2.test(
+  u = k.pwr,
+  v = NULL,
+  f2 = f2_to_calculate_n,  # Set to NULL to solve for effect size
+  sig.level = alpha.pwr,
+  power = power.pwr
+)
+
+print(sensitivity_analysis_to_calculate_n)
+
+n_to_calcualte_n = ceiling(sensitivity_analysis_to_calculate_n$v + k.pwr + 1)
+```
+
+```{r}
+# lets create a plot to see what is the variance in the data
+data_standardized <- as.data.frame(scale(data_numeric))
+calculate_cv <- function(x) {
+  (sd(x) / abs(mean(x))) * 100
+}
+cv_results <- sapply(data_numeric, calculate_cv)
+
+cv_results_decreasing_order <- order(cv_results, decreasing = T)
+data_standardized_order <- data_standardized[, cv_results_decreasing_order]
+cv_results_order <- cv_results[cv_results_decreasing_order]
+
+mgp.current = par("mgp")
+png(filename = paste0("plots/z_score_data_numeric.png"), width = 1096, height = 555, units = "px")
+par(mar = c(11, 2.8, 4.5, 0.1), mgp = c(1.5, 0.5, 0))
+bp = boxplot(
+  data_standardized_order,
+  ylab = "Standardized Value (Z-Score)",
+  col = "lightblue",
+  cex.axis = 1.3, 
+  cex.lab = 1.3, 
+  cex = 1.3,
+  las = 3, outpch = 16, outcol = "red",
+  names = FALSE, xaxt = "n",
+  boxwex = 0.6,
+  xlim = c(3, ncol(data_standardized_order) -2)
+)
+grid(nx = 25, ny = NULL, lty = 2)
+axis(1, at = 1:ncol(data_standardized_order), 
+  labels = parse(text = names_data_numeric[cv_results_decreasing_order]), 
+  las = 2, 
+  cex.axis = 1.3)
+
+ymax.bp = max(bp$stats[5,], bp$out)
+ymin.bp = min(bp$stats[1,], bp$out)
+yrange.bp = ymax.bp - ymin.bp
+text(x = 1:length(bp$n), y = ymax.bp + 0.25*yrange.bp, 
+         labels = paste0(round(cv_results_order,2),"%"), cex = 1.3, xpd = TRUE,
+     srt = 90, adj = 1)
+dev.off()
+par(mgp = mgp.current)
+```
+
+
+```{r}
+# adding the best prediction to the cities and saving them as CSV
+cities_RO <- cities_RO %>%
+  st_join(
+    RO_global_horizontal_data %>% 
+      dplyr::select(final_yield_estimated, final_yield_lower_95_ci, final_yield_upper_95_ci,
+                    final_yield_lower_95_pi, final_yield_upper_95_pi, CUF_over_ISF),
+    join = st_nearest_feature,
+    left = TRUE
+  )
+
+cities_RO_with_prediction <- cities_RO %>%
+  mutate(
+    final_yield_estimated = as.numeric(final_yield_estimated),
+    final_yield_lower_95_ci = as.numeric(final_yield_lower_95_ci),
+    final_yield_upper_95_ci = as.numeric(final_yield_upper_95_ci),
+    final_yield_lower_95_pi = as.numeric(final_yield_lower_95_pi),
+    final_yield_upper_95_pi = as.numeric(final_yield_upper_95_pi),
+    CUF_over_ISF = as.numeric(CUF_over_ISF),
+    Longitude = st_coordinates(.)[, "X"],
+    Latitude = st_coordinates(.)[, "Y"]
+  ) %>%
+  st_drop_geometry() %>%
+  filter(!is.na(final_yield_estimated)) %>%
+  dplyr::select(nome, geocodigo, Longitude, Latitude, Samples, 
+                Samples_clean, final_yield_estimated, 
+                final_yield_lower_95_ci, final_yield_upper_95_ci,
+                final_yield_lower_95_pi, final_yield_upper_95_pi)
+
+
+write_csv(cities_RO_with_prediction, "cities_RO_final_yield_prediction.csv")
+
+# Now join this non-spatial data frame to the spatial municipality map (map_RO)
+map_RO <- map_RO %>%
+  left_join(cities_RO %>% st_drop_geometry(), by = "geocodigo")
+
+plot_map_RO(map_RO, "final_yield_estimated", 
+            map_legend_title = "Final yield (kWh/kWp)",
+            "final_yield_cities_fit_RO")
+plot_map_RO(map_RO, "final_yield_lower_95_ci",
+            map_legend_title = "Final yield lower 95% confidence interval (kWh/kWp)",
+            "final_yield_cities_lower_95_ci_RO")
+plot_map_RO(map_RO, "final_yield_upper_95_ci",
+            map_legend_title = "Final yield upper 95% confidence interval (kWh/kWp)",
+            "final_yield_cities_upper_95_ci_RO")
+
+plot_map_RO(map_RO, "final_yield_lower_95_pi",
+            map_legend_title = "Final yield lower 95% prediction interval (kWh/kWp)",
+            "final_yield_cities_lower_95_pi_RO")
+plot_map_RO(map_RO, "final_yield_upper_95_pi",
+            map_legend_title = "Final yield upper 95% prediction interval (kWh/kWp)",
+            "final_yield_cities_upper_95_pi_RO")
+
+plot_map_RO(map_RO, "CUF_over_ISF", 
+            map_legend_title = "capacity utilization factor over inverter sizing factor (%)",
+            "CUF_over_ISF_cities_fit_RO")
+```
+
+```{r}
+############## Now, we will try something different. We will fit a GAM with all variables and see what happens
+# in case we need to load the data
+# data_cleanest = read.csv("data_cleanest.csv")
+
+# we will not use these variables, because they are either results, repeated
+# or only have one identical datum
+not_to_fit_columns = c("PR_GHI", "TOTAL_kWh", "final_yield", 
+                        "hours_peak_sun", "CUF", "final_yield_estimated",
+                       "outliers", "geocodigo", "monocristalline")
+# our categorical variables
+categorical_predictors = c("MOD_MAKER", "MOD_MODEL", "INV_MAKER",
+                          "INV_MODEL", "CITY_IBGE", "geocodigo",
+                          "p_type", "monofacial")
+
+# these are all the columns in the data
+all_names = names(data_cleanest)
+# we are assuming that numerical variables are all that are not the two described
+# above
+candidate_numerical_predictors <- all_names[
+  !(all_names %in% c(not_to_fit_columns, categorical_predictors))
+]
+
+# now, we will only use variables that have at least n distinctive values
+# this is for cleaning and allowing GAM to converge
+n_distinct_check <- data.frame(
+  variable = candidate_numerical_predictors,
+  n_distinct = sapply(candidate_numerical_predictors, function(var_name) {
+    return(dplyr::n_distinct(data_cleanest[[var_name]], na.rm = TRUE))
+  })
+)
+final_continuous_predictors <- n_distinct_check %>%
+  dplyr::filter(n_distinct >= 10) %>%
+  pull(variable)
+
+# now we write the formula
+numerical_terms_in_GAM <- paste0("s(", final_continuous_predictors, ", bs='ts')", collapse = " + ")
+categorical_terms_in_GAM <- paste0("as.factor(", categorical_predictors, ")", collapse = " + ")
+formula_gam_total = as.formula(paste("PR_GHI ~", categorical_terms_in_GAM, "+", numerical_terms_in_GAM))
+
+gam_penalizad_total <- gam(
+  formula_gam_total,
+  data = data_cleanest,
+  method = "REML",
+  select = TRUE
+) # this can take a while
+
+print(summary(gam_penalizad_total))
+# R2 is negative and Deviance is large. We have overfitting. Note that almost
+# all s() have edf close to zero
+
+
+# so, GAM tells us a lot of the variables cannot explain PR_GHI. Lets see if other
+# method like Random Forest can
+library(randomForest)
+library(pdp)
+library(caret)
+library(e1071)
+set.seed(42)
+
+collumns_for_rf_total <- c("PR_GHI", final_continuous_predictors, categorical_predictors)
+
+# Lets create a dataframe for random forests
+rf_data_brute_force <- data_cleanest %>%
+  dplyr::select(all_of(collumns_for_rf_total)) %>%
+  mutate(across(all_of(categorical_predictors), as.factor))
+
+n_predictors <- ncol(rf_data_brute_force) - 1 # number of predictors
+
+# lets see what happens with different variables to try at each split
+mtry_grid <- expand.grid(
+  .mtry = unique(c(1, 2, 5, 10, round(n_predictors / 3), round(n_predictors / 2), n_predictors - 5))
+)
+
+# lets define a 5-fold cross-validation repeated 3 times
+fit_control <- trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3,
+  verboseIter = FALSE
+)
+
+# lets train
+rf_tuned <- train(
+  PR_GHI ~ .,
+  data = rf_data_brute_force,
+  method = "rf",
+  metric = "Rsquared",
+  tuneGrid = mtry_grid,
+  trControl = fit_control,
+  importance = TRUE
+)
+
+print(rf_tuned)
+
+plot(rf_tuned)
+
+
+######### Now, lets run recursive variable elimination
+subset_sizes <- c(1, 2, 5, 10, 20, 30)
+
+# lets define a 5-fold cross-validation repeated 3 times
+rfe_control <- rfeControl(
+  functions = rfFuncs,
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3,
+  verbose = TRUE
+)
+
+# lets train
+rfe_results <- rfe(
+  PR_GHI ~ ., 
+  data = rf_data_brute_force, 
+  sizes = subset_sizes,
+  rfeControl = rfe_control,
+  metric = "Rsquared"
+)
+
+print(rfe_results)
+
+plot(rfe_results)
+```
+
