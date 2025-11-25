@@ -1,6 +1,6 @@
 # Code and data
 Data and analysis for performance ratio of solar energy PV systems installed in Rondônia, Brazil.
-[![DOI](https://zenodo.org/badge/61003231.svg)](https://doi.org/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17625129.svg)](https://doi.org/10.5281/zenodo.17625129)
 
 
 Shield: [![CC BY-SA 4.0][cc-by-sa-shield]][cc-by-sa]
